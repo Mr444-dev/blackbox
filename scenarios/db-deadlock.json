@@ -1,0 +1,25 @@
+{
+  "scenarioId": "GS-04-DB-DEADLOCK",
+  "title": "PostgreSQL Concurrency Lock Contention",
+  "description": "50 concurrent consumers attempt to reserve remaining quantity = 1 of a scarce SKU using SELECT ... FOR UPDATE. System enforces exactly 1 winner and 49 conflict rejections.",
+  "input": {
+    "resourceId": "SKU-LAPTOP-001",
+    "concurrentRequests": 50,
+    "availableQuantity": 1
+  },
+  "fault": {
+    "type": "CONCURRENT_LOCK_STORM",
+    "workersCount": 50,
+    "burstWindowMs": 100
+  },
+  "expectedState": "Reserved",
+  "expectedEvents": [
+    "WorkflowCreatedEvent",
+    "WorkflowValidatedEvent"
+  ],
+  "expectedInvariants": [
+    "SingleWinnerConcurrency",
+    "NoOverselling",
+    "CapacityConservationStrict"
+  ]
+}

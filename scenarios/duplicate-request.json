@@ -1,0 +1,30 @@
+{
+  "scenarioId": "GS-01-DUPLICATE-REQUEST",
+  "title": "Duplicate Ingestion Storm",
+  "description": "Client network retry storm sends identical request payload with identical X-Idempotency-Key twice within 50ms.",
+  "input": {
+    "correlationId": "idem-storm-9912",
+    "endpoint": "POST /api/v1/workflows",
+    "payload": {
+      "orderId": "ORD-DUPLICATE-001",
+      "sku": "SKU-LAPTOP-001",
+      "quantity": 1,
+      "amount": 2500.00
+    }
+  },
+  "fault": {
+    "type": "DUPLICATE_DELIVERY",
+    "duplicateCount": 2,
+    "delayBetweenRequestsMs": 40
+  },
+  "expectedState": "Validated",
+  "expectedEvents": [
+    "WorkflowCreatedEvent",
+    "WorkflowValidatedEvent"
+  ],
+  "expectedInvariants": [
+    "SingleLogicalWorkflowExecution",
+    "ZeroDuplicateOutboxEvents",
+    "IdempotencyCacheHit"
+  ]
+}

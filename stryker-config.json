@@ -1,0 +1,30 @@
+{
+  "stryker-config": {
+    "project": "Blackbox.Core.csproj",
+    "test-projects": ["../tests/Blackbox.UnitTests/Blackbox.UnitTests.csproj"],
+    "reporters": ["progress", "cleartext", "html", "json"],
+    "concurrency": 4,
+    "mutate": [
+      "Domain/**/*.cs",
+      "Verification/**/*.cs",
+      "Outbox/**/*.cs",
+      "Saga/**/*.cs",
+      "!Contracts/**/*.cs"
+    ],
+    "thresholds": {
+      "high": 90,
+      "low": 80,
+      "break": 75
+    },
+    "mutators": {
+      "arithmetic": true,
+      "boolean-literal": true,
+      "assignment": true,
+      "equality": true,
+      "logical": true,
+      "unary": true,
+      "update": true,
+      "statement": true
+    }
+  }
+}

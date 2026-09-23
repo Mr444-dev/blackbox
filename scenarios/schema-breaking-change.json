@@ -1,0 +1,24 @@
+{
+  "scenarioId": "GS-05-SCHEMA-BREAKING",
+  "title": "Consumer-Driven Contract Drift & Breaking Change Guard",
+  "description": "Upstream producer publishes OrderCreated.v3 which deprecates or removes customerId. Schema validator halts pipeline with contract breaking change notification.",
+  "input": {
+    "producerService": "Checkout.Api",
+    "consumerService": "Blackbox.Workflow",
+    "contractName": "OrderCreatedEvent",
+    "producerVersion": "v3.0.0",
+    "consumerRequiredVersion": "v2.0.0",
+    "removedProperties": ["customerId", "billingCountry"]
+  },
+  "fault": {
+    "type": "SCHEMA_DRIFT_BREAKING",
+    "backwardCompatible": false
+  },
+  "expectedState": "Failed",
+  "expectedEvents": [],
+  "expectedInvariants": [
+    "ContractIntegrityPreserved",
+    "DeploymentGateBlocked",
+    "ZeroSilentPayloadCorruption"
+  ]
+}

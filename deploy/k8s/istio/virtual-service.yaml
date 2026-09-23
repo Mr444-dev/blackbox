@@ -1,0 +1,55 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: blackbox-api-routes
+  namespace: blackbox
+spec:
+  hosts:
+    - "blackbox.internal"
+    - "api.blackbox.internal"
+    - "blackbox-api-service"
+    - "blackbox-api-service.blackbox.svc.cluster.local"
+  gateways:
+    - blackbox-gateway
+    - mesh
+  http:
+    # 1. Canary Header Override: Route staging/test requests to Canary v2
+    - match:
+        - headers:
+            X-Canary:
+              exact: "beta"
+      route:
+        - destination:
+            host: blackbox-api-service.blackbox.svc.cluster.local
+            subset: v2
+      timeout: 3s
+
+    # 2. Worker Pod Internal Orchestration Routes
+    - match:
+        - uri:
+            prefix: /api/v1/workflows/internal
+      route:
+        - destination:
+            host: blackbox-api-service.blackbox.svc.cluster.local
+            subset: v1
+      timeout: 5s
+      retries:
+        attempts: 3
+        perTryTimeout: 1500ms
+        retryOn: "5xx,connect-failure,refused-stream"
+
+    # 3. Default Traffic Split: 90% Stable (v1) / 10% Canary (v2)
+    - route:
+        - destination:
+            host: blackbox-api-service.blackbox.svc.cluster.local
+            subset: v1
+          weight: 90
+        - destination:
+            host: blackbox-api-service.blackbox.svc.cluster.local
+            subset: v2
+          weight: 10
+      timeout: 3s
+      retries:
+        attempts: 3
+        perTryTimeout: 1000ms
+        retryOn: "5xx,connect-failure,refused-stream"

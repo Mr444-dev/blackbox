@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: blackbox
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blackbox-config
+  namespace: blackbox
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  ConnectionStrings__DefaultConnection: "Host=blackbox-postgres;Port=5432;Database=blackbox_db;Username=blackbox_user;Password=[REDACTED]"
+  Kafka__BootstrapServers: "blackbox-kafka:9092"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blackbox-api
+  namespace: blackbox
+  labels:
+    app: blackbox-api
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: blackbox-api
+  template:
+    metadata:
+      labels:
+        app: blackbox-api
+        version: "1.0.0"
+    spec:
+      serviceAccountName: blackbox-api-sa
+      containers:
+        - name: api
+          image: blackbox-api:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: blackbox-config
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blackbox-api-service
+  namespace: blackbox
+spec:
+  type: ClusterIP
+  selector:
+    app: blackbox-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blackbox-worker
+  namespace: blackbox
+  labels:
+    app: blackbox-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blackbox-worker
+  template:
+    metadata:
+      labels:
+        app: blackbox-worker
+        version: "1.0.0"
+    spec:
+      serviceAccountName: blackbox-worker-sa
+      containers:
+        - name: worker
+          image: blackbox-worker:1.0.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: blackbox-config
+          resources:
+            requests:
+              cpu: "150m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: blackbox-api-hpa
+  namespace: blackbox
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: blackbox-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: blackbox-api-pdb
+  namespace: blackbox
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: blackbox-api

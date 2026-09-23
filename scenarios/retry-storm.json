@@ -1,0 +1,25 @@
+{
+  "scenarioId": "GS-06-RETRY-STORM",
+  "title": "Provider Outage with 1,000 Rapid Retries",
+  "description": "External payment gateway is DOWN. 1,000 inbound requests trigger retry attempts. Exponential backoff with jitter and retry budget prevents self-inflicted denial of service.",
+  "input": {
+    "targetService": "External.PaymentGateway",
+    "concurrentRetries": 1000,
+    "providerStatus": "UNAVAILABLE_503"
+  },
+  "fault": {
+    "type": "RETRY_STORM_THUNDERING_HERD",
+    "outageDurationSec": 30
+  },
+  "expectedState": "Failed",
+  "expectedEvents": [
+    "WorkflowCreatedEvent",
+    "WorkflowValidatedEvent",
+    "WorkflowFailedEvent"
+  ],
+  "expectedInvariants": [
+    "JitteredExponentialBackoffApplied",
+    "RetryBudgetCapped",
+    "SystemMemoryThreadStable"
+  ]
+}

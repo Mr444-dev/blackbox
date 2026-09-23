@@ -1,0 +1,22 @@
+**/bin/
+**/obj/
+*.user
+*.userosscache
+*.sln.docstates
+.vs/
+.idea/
+*.suo
+node_modules/
+playwright-report/
+test-results/
+.playwright/
+dist/
+build/
+*.log
+.DS_Store
+Thumbs.db
+
+# Secrets & environment
+.env
+.env.*
+!.env.example

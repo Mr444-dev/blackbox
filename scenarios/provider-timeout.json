@@ -1,0 +1,29 @@
+{
+  "scenarioId": "GS-02-PROVIDER-TIMEOUT",
+  "title": "Third-Party Logistics HTTP Timeout & Circuit Trip",
+  "description": "External carrier dispatch endpoint times out after 5,000ms. Polly circuit breaker trips to Open, and workflow is safely routed to DLQ without corrupting state.",
+  "input": {
+    "correlationId": "corr-timeout-8841",
+    "endpoint": "POST /api/v1/workflows/{id}/dispatch",
+    "payload": {
+      "carrier": "DHL_EXPRESS",
+      "destinationAddress": "Warsaw Hub 4, Poland"
+    }
+  },
+  "fault": {
+    "type": "HTTP_LATENCY_SPIKE",
+    "delayMs": 5500,
+    "httpStatus": 504
+  },
+  "expectedState": "Failed",
+  "expectedEvents": [
+    "WorkflowCreatedEvent",
+    "WorkflowValidatedEvent",
+    "WorkflowFailedEvent"
+  ],
+  "expectedInvariants": [
+    "TerminalStateImmutability",
+    "DeadLetterQuarantined",
+    "CircuitBreakerTripped"
+  ]
+}
