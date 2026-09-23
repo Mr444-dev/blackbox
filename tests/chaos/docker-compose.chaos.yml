@@ -1,0 +1,13 @@
+services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.11.0
+    container_name: blackbox-toxiproxy
+    restart: unless-stopped
+    ports:
+      - "8474:8474" # Toxiproxy Management API
+      - "5433:5433" # Proxied PostgreSQL endpoint
+      - "9095:9095" # Proxied Kafka endpoint
+      - "8085:8085" # Proxied Carrier External Gateway
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    volumes:
+      - ./toxiproxy.json:/config/toxiproxy.json:ro

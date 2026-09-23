@@ -1,0 +1,62 @@
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: blackbox-health-allow
+  namespace: blackbox
+spec:
+  selector:
+    matchLabels:
+      app: blackbox-api
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            paths: ["/health", "/healthz", "/metrics"]
+            methods: ["GET"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: blackbox-ingress-allow
+  namespace: blackbox
+spec:
+  selector:
+    matchLabels:
+      app: blackbox-api
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+      to:
+        - operation:
+            paths: ["/swagger*", "/api/v1/workflows*", "/api/v1/resources*"]
+            methods: ["GET", "POST", "PUT", "DELETE"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: blackbox-worker-to-api-allow
+  namespace: blackbox
+spec:
+  selector:
+    matchLabels:
+      app: blackbox-api
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/blackbox/sa/blackbox-worker-sa"]
+      to:
+        - operation:
+            paths: ["/api/v1/workflows/internal/*", "/api/v1/dlq/*", "/api/v1/crdt/*"]
+            methods: ["GET", "POST"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: default-deny-all
+  namespace: blackbox
+spec:
+  # Empty rules list with no action matches all traffic and defaults to DENY
+  {}

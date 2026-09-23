@@ -1,0 +1,26 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: blackbox-gateway
+  namespace: blackbox
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "blackbox.internal"
+        - "api.blackbox.internal"
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        credentialName: blackbox-tls-secret
+      hosts:
+        - "blackbox.internal"
+        - "api.blackbox.internal"

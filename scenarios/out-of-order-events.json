@@ -1,0 +1,28 @@
+{
+  "scenarioId": "GS-03-OUT-OF-ORDER-EVENTS",
+  "title": "Asynchronous Webhook Arrives Before State Transition",
+  "description": "Payment webhook notification arrives via Kafka before database reservation commit completes. Inbox buffers or re-evaluates event without skipping required state invariants.",
+  "input": {
+    "correlationId": "corr-out-of-order-7712",
+    "endpoint": "POST /api/v1/workflows/{id}/callback",
+    "payload": {
+      "paymentReference": "PAY-STRIPE-9941",
+      "paymentStatus": "CAPTURED",
+      "amount": 499.00
+    }
+  },
+  "fault": {
+    "type": "OUT_OF_ORDER_DELIVERY",
+    "inversionOrder": ["CallbackReceived", "ReservationConfirmed"]
+  },
+  "expectedState": "WaitingCallback",
+  "expectedEvents": [
+    "WorkflowCreatedEvent",
+    "WorkflowValidatedEvent",
+    "WorkflowAwaitingCallbackEvent"
+  ],
+  "expectedInvariants": [
+    "StateMachineDAGStrictness",
+    "NoPrematureTransitionToCompleted"
+  ]
+}
