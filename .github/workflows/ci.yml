@@ -12,10 +12,10 @@ permissions:
 jobs:
   backend:
     name: Build and .NET tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
       - run: dotnet restore Blackbox.slnx
@@ -24,7 +24,7 @@ jobs:
       - run: dotnet test tests/Blackbox.IntegrationTests/Blackbox.IntegrationTests.csproj --no-build --configuration Release --logger "trx;LogFileName=integration-tests.trx"
         env:
           BLACKBOX_TESTCONTAINERS: "true"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: dotnet-test-results
@@ -34,19 +34,19 @@ jobs:
 
   api-e2e:
     name: Docker Compose and Playwright API tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: backend
     env:
       BLACKBOX_API_KEY: ci-test-key-not-for-production-0123456789
       BLACKBOX_POSTGRES_PASSWORD: ci-postgres-password-not-for-production
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: tests/blackbox-e2e/package-lock.json
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
       - name: Start full local stack
@@ -95,7 +95,7 @@ jobs:
           echo "Kafka Outbox/Inbox delivery was not observed."
           exit 1
       - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: playwright-report
