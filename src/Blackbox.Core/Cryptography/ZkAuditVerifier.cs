@@ -12,8 +12,8 @@ public record ZkAuditPublicClaim(
 public static class ZkAuditVerifier
 {
     /// <summary>
-    /// Verifies that a business workflow event was executed and permanently sealed into the
-    /// certified Merkle Root without exposing or disclosing the confidential transaction payload.
+    /// Verifies a public workflow claim against a Merkle inclusion proof using the committed payload hash.
+    /// This is not a zero-knowledge proof and does not independently establish permanent storage.
     /// </summary>
     public static bool VerifyClaimWithoutPayload(
         string certifiedMerkleRoot,

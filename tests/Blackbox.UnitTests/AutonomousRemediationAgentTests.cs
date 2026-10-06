@@ -10,7 +10,7 @@ public class AutonomousRemediationAgentTests
     private readonly AutonomousRemediationAgent _agent = new();
 
     [Fact]
-    public async Task DiagnoseIncident_WhenPaymentFails_RecommendsSagaRollbackAndExecutesAutonomously()
+    public async Task DiagnoseIncident_WhenPaymentFails_RecommendsRollbackButDoesNotClaimExecution()
     {
         // Arrange
         var context = new IncidentTelemetryContext(
@@ -39,14 +39,16 @@ public class AutonomousRemediationAgentTests
         recommendation.ConfidenceScore.Should().BeGreaterThan(0.90);
         recommendation.RequiresHumanApproval.Should().BeFalse();
         recommendation.SuggestedPolicyJson.Should().Contain("REVERSE_SAGA_COMPENSATION");
+        recommendation.ReasoningLog.Should().Contain("no prior side effect or payment-provider response was inspected");
+        recommendation.ReasoningLog.Should().Contain("not a calibrated probability");
 
-        // Act 2: Execute Remediation
+        // Act 2: Verify that the recommendation endpoint does not claim to execute side effects.
         var execution = await _agent.ExecuteRemediationPolicyAsync(context, recommendation);
 
         // Assert Execution
-        execution.Success.Should().BeTrue();
-        execution.StateAfterRemediation.Should().Be("COMPENSATED");
-        execution.ExecutionNotes.Should().Contain("Invariants preserved");
+        execution.Success.Should().BeFalse();
+        execution.StateAfterRemediation.Should().Be("NOT_EXECUTED");
+        execution.ExecutionNotes.Should().Contain("no remediation was executed");
     }
 
     [Fact]
@@ -74,6 +76,8 @@ public class AutonomousRemediationAgentTests
         recommendation.RecommendedAction.Should().Be(RemediationActionType.DrainAndRetryWithJitter);
         recommendation.ConfidenceScore.Should().BeGreaterThan(0.90);
         recommendation.SuggestedPolicyJson.Should().Contain("JITTERED_EXPONENTIAL_BACKOFF");
+        recommendation.ReasoningLog.Should().Contain("longest supplied span");
+        recommendation.ReasoningLog.Should().NotContain("carrier rate limiting");
     }
 
     [Fact]
@@ -97,6 +101,7 @@ public class AutonomousRemediationAgentTests
         recommendation.RecommendedAction.Should().Be(RemediationActionType.QuarantineToDlq);
         recommendation.SuggestedPolicyJson.Should().Contain("QUARANTINE_TO_DEAD_LETTER_QUEUE");
         recommendation.SuggestedPolicyJson.Should().Contain("\"suppressRetries\":true");
+        recommendation.ReasoningLog.Should().Contain("no Kafka record was moved or replayed");
     }
 
     [Fact]

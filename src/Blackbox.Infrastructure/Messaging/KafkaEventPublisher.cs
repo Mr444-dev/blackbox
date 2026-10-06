@@ -10,10 +10,10 @@ public interface IEventPublisher
 
 public class KafkaEventPublisher : IEventPublisher
 {
-    private readonly IProducer<string, string>? _producer;
+    private readonly IProducer<string, string> _producer;
     private readonly ILogger<KafkaEventPublisher> _logger;
 
-    public KafkaEventPublisher(ILogger<KafkaEventPublisher> logger, IProducer<string, string>? producer = null)
+    public KafkaEventPublisher(ILogger<KafkaEventPublisher> logger, IProducer<string, string> producer)
     {
         _logger = logger;
         _producer = producer;
@@ -21,13 +21,6 @@ public class KafkaEventPublisher : IEventPublisher
 
     public async Task PublishAsync(string topic, string messageKey, string payload, CancellationToken cancellationToken = default)
     {
-        if (_producer == null)
-        {
-            _logger.LogWarning("Kafka producer not initialized. Emulating publishing to topic '{Topic}' for key '{Key}'.", 
-                topic, messageKey);
-            return;
-        }
-
         var message = new Message<string, string>
         {
             Key = messageKey,

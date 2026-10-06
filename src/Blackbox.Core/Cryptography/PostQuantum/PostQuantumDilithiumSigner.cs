@@ -4,10 +4,8 @@ using System.Text;
 namespace Blackbox.Core.Cryptography.PostQuantum;
 
 /// <summary>
-/// NIST FIPS 204 (ML-DSA / CRYSTALS-Dilithium) Lattice-Based Digital Signature Implementation.
-/// Security relies on the hardness of the Short Integer Solution (SIS) and Module-SIS problem in lattices.
-/// Parameters: n = 256, q = 8,380,417, gamma1 = 2^19 (524,288), beta = 196.
-/// Resistant to Shor's quantum polynomial-time factoring/discrete log algorithms.
+/// Educational toy lattice-style signature demo. This is not ML-DSA, is not FIPS 204 compliant,
+/// and is not suitable for security-sensitive use.
 /// </summary>
 public record DilithiumPublicKey(string Algorithm, string KeyId, byte[] SeedRho, int[] VectorT);
 public record DilithiumPrivateKey(string Algorithm, string KeyId, byte[] SeedRho, int[] VectorS, DilithiumPublicKey PublicKey);
@@ -21,7 +19,7 @@ public record DilithiumSignature(
 
 public class PostQuantumDilithiumSigner
 {
-    public const string AlgorithmName = "NIST-FIPS-204-ML-DSA-Dilithium3";
+    public const string AlgorithmName = "BLACKBOX-EDUCATIONAL-LATTICE-SIGNATURE-v1";
     public const int ModulusQ = 8380417;
     public const int DimensionN = 256;
     public const int Gamma1 = 1 << 19; // 524288
@@ -62,15 +60,15 @@ public class PostQuantumDilithiumSigner
             byte[] yEntropy = RandomNumberGenerator.GetBytes(DimensionN * 4);
             for (int i = 0; i < DimensionN; i++)
             {
-                int raw = Math.Abs(BitConverter.ToInt32(yEntropy, i * 4));
-                y[i] = (raw % (2 * Gamma1 + 1)) - Gamma1;
+                uint raw = BitConverter.ToUInt32(yEntropy, i * 4);
+                y[i] = (int)(raw % (uint)(2 * Gamma1 + 1)) - Gamma1;
             }
 
             // 2. Commitment w = a * y (mod q)
             int[] w = new int[DimensionN];
             for (int i = 0; i < DimensionN; i++)
             {
-                w[i] = Mod(a[i] * y[i], ModulusQ);
+                w[i] = Mod((long)a[i] * y[i], ModulusQ);
             }
 
             // 3. Challenge hash c = H(message || w)
@@ -101,7 +99,7 @@ public class PostQuantumDilithiumSigner
                     KeyId: privateKey.KeyId,
                     CommitmentHash: challengeHash,
                     SignatureVectorZ: z,
-                    SecurityCategory: "NIST Security Category 3 (Quantum-Resistant 192-bit)");
+                    SecurityCategory: "Educational demonstration; not security reviewed");
             }
             // Rejection sampling: retry with fresh masking vector y
         }
@@ -133,7 +131,7 @@ public class PostQuantumDilithiumSigner
         int[] wPrime = new int[DimensionN];
         for (int i = 0; i < DimensionN; i++)
         {
-            int val = a[i] * signature.SignatureVectorZ[i] - cVec[i] * publicKey.VectorT[i];
+            long val = (long)a[i] * signature.SignatureVectorZ[i] - (long)cVec[i] * publicKey.VectorT[i];
             wPrime[i] = Mod(val, ModulusQ);
         }
 
@@ -187,6 +185,12 @@ public class PostQuantumDilithiumSigner
     {
         int r = val % m;
         return r < 0 ? r + m : r;
+    }
+
+    private static int Mod(long val, int m)
+    {
+        long r = val % m;
+        return (int)(r < 0 ? r + m : r);
     }
 
     public static byte[] SerializeVector(int[] vec)

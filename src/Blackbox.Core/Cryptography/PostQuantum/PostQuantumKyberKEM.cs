@@ -3,9 +3,8 @@ using System.Security.Cryptography;
 namespace Blackbox.Core.Cryptography.PostQuantum;
 
 /// <summary>
-/// NIST FIPS 203 (ML-KEM / CRYSTALS-Kyber) Lattice-Based Key Encapsulation Mechanism.
-/// Security is based on the hardness of the Learning With Errors (LWE) problem in module lattices.
-/// Parameters: n = 256, q = 3329.
+/// Educational toy lattice-style key encapsulation demo. This is not ML-KEM, is not FIPS 203 compliant,
+/// and is not suitable for security-sensitive use.
 /// </summary>
 public record KyberPublicKey(string Algorithm, string KeyId, byte[] SeedRho, int[] VectorT);
 public record KyberPrivateKey(string Algorithm, string KeyId, int[] VectorS, KyberPublicKey PublicKey);
@@ -14,7 +13,7 @@ public record KyberEncapsulationResult(byte[] Ciphertext, byte[] SharedSecret256
 
 public class PostQuantumKyberKEM
 {
-    public const string AlgorithmName = "NIST-FIPS-203-ML-KEM-Kyber768";
+    public const string AlgorithmName = "BLACKBOX-EDUCATIONAL-LATTICE-KEM-v1";
     public const int ModulusQ = 3329;
     public const int DimensionN = 256;
     public const int HalfQ = ModulusQ / 2; // 1664

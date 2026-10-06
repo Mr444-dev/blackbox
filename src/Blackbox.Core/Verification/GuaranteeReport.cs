@@ -3,6 +3,7 @@ namespace Blackbox.Core.Verification;
 public record GuaranteePillarResult
 {
     public required string PillarName { get; init; }
+    public bool Evaluated { get; init; } = true;
     public required bool Passed { get; init; }
     public required string Summary { get; init; }
     public int InvariantsEvaluated { get; init; }
@@ -20,25 +21,27 @@ public class GuaranteeReport
     public double ExecutionDurationMs { get; init; }
     public List<GuaranteePillarResult> Pillars { get; init; } = new();
 
-    public int TotalInvariantsEvaluated => Pillars.Sum(p => p.InvariantsEvaluated);
-    public int TotalAssertionsEvaluated => Pillars.Sum(p => p.AssertionsEvaluated);
+    public int TotalInvariantsEvaluated => Pillars.Where(p => p.Evaluated).Sum(p => p.InvariantsEvaluated);
+    public int TotalAssertionsEvaluated => Pillars.Where(p => p.Evaluated).Sum(p => p.AssertionsEvaluated);
     public int TotalViolations => Pillars.Sum(p => p.Violations.Count);
-    public bool OverallPassed => Pillars.All(p => p.Passed) && TotalViolations == 0;
+    public int EvaluatedPillarCount => Pillars.Count(p => p.Evaluated);
+    public int NotEvaluatedPillarCount => Pillars.Count(p => !p.Evaluated);
+    public bool OverallPassed => Pillars.All(p => !p.Evaluated || p.Passed) && TotalViolations == 0;
 
     public int TotalEventsPreserved { get; init; }
-    public int TotalServicesInvolved { get; init; } = 3; // e.g. Api, Core/Worker, Persistence
-    public int TotalExternalDependencies { get; init; } = 2; // e.g. Carrier, Payment
+    public int TotalServicesInvolved { get; init; }
+    public int TotalExternalDependencies { get; init; }
 
     /// <summary>
-    /// Signature formal guarantee string:
-    /// e.g. "PASS: 13 invariants | 48 assertions | 12 events | 3 services | 2 external dependencies | 0 violations"
+    /// Compact scenario verification summary:
+    /// The counts describe only evidence supplied to the scenario verifier.
     /// </summary>
     public string SignatureSummary
     {
         get
         {
             string status = OverallPassed ? "PASS" : "FAIL";
-            return $"{status}: {TotalInvariantsEvaluated} invariants | {TotalAssertionsEvaluated} assertions | {TotalEventsPreserved} events | {TotalServicesInvolved} services | {TotalExternalDependencies} external dependencies | {TotalViolations} violations";
+            return $"{status}: {EvaluatedPillarCount}/{Pillars.Count} pillars evaluated | {TotalInvariantsEvaluated} invariants | {TotalAssertionsEvaluated} assertions | {TotalEventsPreserved} outbox events | {TotalServicesInvolved} observed services | {TotalExternalDependencies} declared external dependencies | {TotalViolations} violations";
         }
     }
 }

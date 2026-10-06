@@ -2,6 +2,13 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Workflow Execution Lifecycle', () => {
 
+  test('application endpoints reject an invalid API key', async ({ request }) => {
+    const response = await request.get('/api/v1/workflows', {
+      headers: { 'X-API-Key': 'invalid-test-key' }
+    });
+    expect(response.status()).toBe(401);
+  });
+
   test('GET /health should return 200 OK and Healthy status', async ({ request }) => {
     const response = await request.get('/health');
     expect(response.status()).toBe(200);

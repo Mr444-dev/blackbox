@@ -14,41 +14,33 @@ public class PostgreSqlFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        try
+        if (!string.Equals(Environment.GetEnvironmentVariable("BLACKBOX_TESTCONTAINERS"), "true", StringComparison.OrdinalIgnoreCase))
         {
-            Container = new PostgreSqlBuilder("postgres:17-alpine")
-                .WithDatabase("blackbox_test_db")
-                .WithUsername("test_user")
-                .WithPassword("test_password")
-                .Build();
-
-            await Container.StartAsync();
-            ConnectionString = Container.GetConnectionString();
-            IsDockerAvailable = true;
-
-            // Initialize schema using DbContext
-            var options = new DbContextOptionsBuilder<BlackboxDbContext>()
-                .UseNpgsql(ConnectionString)
-                .Options;
-
-            await using var context = new BlackboxDbContext(options);
-            await context.Database.EnsureCreatedAsync();
-
-            // Seed initial test resources if not already present
-            if (!await context.Resources.AnyAsync())
-            {
-                await context.Resources.AddRangeAsync(
-                    new Core.Domain.Resource("SKU-LAPTOP-001", "High-End Laptop", 1),
-                    new Core.Domain.Resource("SKU-PHONE-002", "Smartphone", 10),
-                    new Core.Domain.Resource("SKU-DESK-003", "Standing Desk", 5)
-                );
-                await context.SaveChangesAsync();
-            }
+            return;
         }
-        catch (Exception ex)
+
+        Container = new PostgreSqlBuilder("postgres:17-alpine")
+            .WithDatabase("blackbox_test_db")
+            .WithUsername("test_user")
+            .WithPassword("test_password")
+            .Build();
+        await Container.StartAsync();
+        ConnectionString = Container.GetConnectionString();
+        IsDockerAvailable = true;
+
+        var options = new DbContextOptionsBuilder<BlackboxDbContext>()
+            .UseNpgsql(ConnectionString)
+            .Options;
+
+        await using var context = new BlackboxDbContext(options);
+        await context.Database.EnsureCreatedAsync();
+        if (!await context.Resources.AnyAsync())
         {
-            IsDockerAvailable = false;
-            DockerUnavailableReason = ex.Message;
+            await context.Resources.AddRangeAsync(
+                new Core.Domain.Resource("SKU-LAPTOP-001", "High-End Laptop", 1),
+                new Core.Domain.Resource("SKU-PHONE-002", "Smartphone", 10),
+                new Core.Domain.Resource("SKU-DESK-003", "Standing Desk", 5));
+            await context.SaveChangesAsync();
         }
     }
 
@@ -74,5 +66,16 @@ public class PostgreSqlFixture : IAsyncLifetime
             .Options;
 
         return new BlackboxDbContext(options);
+    }
+}
+
+public sealed class DockerFactAttribute : FactAttribute
+{
+    public DockerFactAttribute()
+    {
+        if (!string.Equals(Environment.GetEnvironmentVariable("BLACKBOX_TESTCONTAINERS"), "true", StringComparison.OrdinalIgnoreCase))
+        {
+            Skip = "Set BLACKBOX_TESTCONTAINERS=true to run PostgreSQL Testcontainers integration tests.";
+        }
     }
 }

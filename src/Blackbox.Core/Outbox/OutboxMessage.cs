@@ -3,6 +3,7 @@ namespace Blackbox.Core.Outbox;
 public enum OutboxStatus
 {
     Pending,
+    Processing,
     Published,
     Failed
 }
@@ -50,10 +51,15 @@ public class OutboxMessage
         Error = null;
     }
 
-    public void MarkFailed(string error)
+    public void MarkProcessing()
     {
-        Status = OutboxStatus.Failed;
+        Status = OutboxStatus.Processing;
+    }
+
+    public void MarkRetryableFailure(string error, int maxAttempts)
+    {
         RetryCount++;
+        Status = RetryCount >= maxAttempts ? OutboxStatus.Failed : OutboxStatus.Pending;
         Error = error;
     }
 }
@@ -72,7 +78,7 @@ public class InboxMessage
         ConsumerName = string.Empty;
         MessageId = string.Empty;
         Payload = "{}";
-        Status = "PROCESSED";
+        Status = "RECEIVED";
     }
 
     public static InboxMessage Create(string consumerName, string messageId, string payload)
@@ -83,7 +89,7 @@ public class InboxMessage
             ConsumerName = consumerName,
             MessageId = messageId,
             Payload = payload,
-            Status = "PROCESSED",
+            Status = "RECEIVED",
             CreatedAt = DateTime.UtcNow
         };
     }

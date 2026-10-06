@@ -1,10 +1,11 @@
 **/bin/
 **/obj/
+.vs/
+.idea/
+.vscode/
 *.user
 *.userosscache
 *.sln.docstates
-.vs/
-.idea/
 *.suo
 node_modules/
 playwright-report/
@@ -13,6 +14,18 @@ test-results/
 dist/
 build/
 *.log
+.stryker-tmp/
+coverage/
+TestResults/
+artifacts/
+data/
+postgres-data/
+*.pid
+*.seed
+*.pem
+*.pfx
+*.key
+*.crt
 .DS_Store
 Thumbs.db
 
@@ -20,3 +33,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+!.env.*.example
+secrets.json
+appsettings.*.local.json

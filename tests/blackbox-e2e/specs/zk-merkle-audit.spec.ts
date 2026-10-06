@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Zero-Knowledge Audit Trail & Cryptographic Merkle Proofs', () => {
+test.describe('Merkle Audit Inclusion Proofs', () => {
 
-  test('Workflow execution events should form verifiable Merkle Tree and support ZK claim verification', async ({ request }) => {
+  test('Workflow audit claims should verify against a Merkle inclusion proof', async ({ request }) => {
     const workflowId = 'a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d';
 
     // 1. Append Event 1: CREATED -> VALIDATED
@@ -68,7 +68,7 @@ test.describe('Zero-Knowledge Audit Trail & Cryptographic Merkle Proofs', () => 
     const verifyBody = await verifyRes.json();
     expect(verifyBody.valid).toBe(true);
 
-    // 7. Execute Zero-Knowledge Claim Verification (Without Raw Payload)
+    // 7. Verify a public claim derived from the committed payload hash.
     const zkClaim = {
       sequenceNumber: ev2.sequenceNumber,
       workflowId: ev2.workflowId,
@@ -90,6 +90,8 @@ test.describe('Zero-Knowledge Audit Trail & Cryptographic Merkle Proofs', () => 
     const zkBody = await zkRes.json();
     expect(zkBody.valid).toBe(true);
     expect(zkBody.verifiedStateTransition).toBe('VALIDATED -> RESERVED');
+    expect(zkBody.proofType).toBe('Merkle inclusion proof');
+    expect(zkBody.payloadHandling).toContain('not a zero-knowledge proof');
 
     // 8. Tamper Resistance: Fake root rejection
     const fakeProof = { ...proof, rootHash: '0000000000000000000000000000000000000000000000000000000000000000' };

@@ -6,7 +6,12 @@ public record SideEffectRecord(string EffectType, string IdempotencyKey, DateTim
 
 public record TraceSpanRecord(string TraceId, string SpanId, string? ParentSpanId, string ServiceName, string OperationName, long DurationMs);
 
-public record SecurityAuditRecord(string CallerIdentity, bool IsAuthenticated, bool HasValidRole, bool RateLimitPassed, bool PayloadSanitized);
+public record SecurityAuditRecord(
+    string CallerIdentity,
+    bool? IsAuthenticated,
+    bool? HasValidRole,
+    bool? RateLimitPassed,
+    bool? PayloadSanitized);
 
 public class WorkflowScenarioContext
 {
@@ -14,10 +19,11 @@ public class WorkflowScenarioContext
     public required WorkflowInstance Workflow { get; init; }
     public Resource? Resource { get; init; }
     public List<string> OutboxMessageIds { get; init; } = new();
-    public List<string> InboxProcessedMessageIds { get; init; } = new();
+    public List<string> InboxMessageIds { get; init; } = new();
     public List<SideEffectRecord> SideEffects { get; init; } = new();
     public List<TraceSpanRecord> TraceSpans { get; init; } = new();
     public double ExecutionDurationMs { get; init; }
-    public SecurityAuditRecord SecurityAudit { get; init; } = new("service_account_workflow", true, true, true, true);
+    public int ExternalDependencyCount { get; init; }
+    public SecurityAuditRecord? SecurityAudit { get; init; }
     public Dictionary<string, string> Metadata { get; init; } = new();
 }

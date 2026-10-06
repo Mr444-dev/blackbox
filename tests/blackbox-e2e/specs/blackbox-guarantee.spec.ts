@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('BLACKBOX GUARANTEE Formal Verification Engine', () => {
+test.describe('Blackbox Scenario Verification Scorecard', () => {
 
-  test('POST /api/v1/scenarios/run returns PASS with all 10 verification pillars intact', async ({ request }) => {
+  test('POST /api/v1/scenarios/run reports evaluated checks and missing evidence', async ({ request }) => {
     const scenarioRequest = {
       scenarioName: 'E2E_Automated_BlackboxGuarantee_Spec',
       correlationId: `E2E-GUARANTEE-${Date.now()}`,
@@ -21,14 +21,13 @@ test.describe('BLACKBOX GUARANTEE Formal Verification Engine', () => {
     expect(response.status()).toBe(200);
     const report = await response.json();
 
-    // Verify 10 formal pillars
+    // Ten checks are represented; checks without supplied evidence are marked not evaluated.
     expect(report.pillars).toHaveLength(10);
     expect(report.overallPassed).toBe(true);
     expect(report.totalViolations).toBe(0);
 
-    // Verify signature formal output format
-    // e.g. "PASS: 13 invariants | 48 assertions | ... | 0 violations"
-    expect(report.signatureSummary).toMatch(/^PASS:\s+\d+\s+invariants/);
+    // The summary reports measured scenario evidence and the number of evaluated pillars.
+    expect(report.signatureSummary).toMatch(/^PASS:.*\|\s+\d+\s+invariants/);
     expect(report.signatureSummary).toContain('0 violations');
   });
 
@@ -54,7 +53,7 @@ test.describe('BLACKBOX GUARANTEE Formal Verification Engine', () => {
     expect(report.totalViolations).toBeGreaterThan(0);
     expect(report.signatureSummary).toMatch(/^FAIL:/);
 
-    const secPillar = report.pillars.find((p: any) => p.pillarName === 'Security Rules');
+    const secPillar = report.pillars.find((p: any) => p.pillarName === 'Security Scenario Checks');
     expect(secPillar.passed).toBe(false);
   });
 });

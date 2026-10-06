@@ -1,151 +1,222 @@
-# ⬛ BLACKBOX | Distributed Workflow & API Reliability Platform
+# Blackbox
 
-> **A production-grade distributed workflow engine and automated quality verification platform engineered to guarantee strict business state invariants, idempotency, and data consistency across unreliable distributed systems.**
+![Build](https://github.com/Mr444-dev/blackbox/actions/workflows/ci.yml/badge.svg?branch=main)
 
-[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
-[![PostgreSQL 17](https://img.shields.io/badge/PostgreSQL-17-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
-[![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-KRaft-231F20?logo=apachekafka&logoColor=white)](https://kafka.apache.org/)
-[![Playwright](https://img.shields.io/badge/Playwright-TypeScript-2EAD33?logo=playwright&logoColor=white)](https://playwright.dev/)
-[![Stryker.NET](https://img.shields.io/badge/Mutation_Score-91.4%25-brightgreen)](docs/benchmarks/MUTATION_TESTING_REPORT.md)
-[![Testcontainers](https://img.shields.io/badge/Testcontainers-Real_Containers-007ACC)](https://testcontainers.com/)
+> A .NET 10 distributed-order processing prototype built around PostgreSQL, Kafka, and a transactional outbox.
 
----
+**Stack:** C# · .NET 10 · ASP.NET Core · PostgreSQL · Kafka · Docker Compose · xUnit · Playwright
 
-## 🎯 The BLACKBOX GUARANTEE
+## Overview
 
-In distributed architectures (ERP ↔ WMS ↔ 3PL Carrier ↔ Payments), services crash, external APIs return HTTP 429 / 5xx errors, and networks duplicate packets. Typical portfolio projects demonstrate only the happy path and crumble under real-world network partitions or concurrency races.
+Blackbox explores order processing across an HTTP API, PostgreSQL, Kafka, a background worker, and an in-process carrier failure simulator. Its central engineering question is how to keep workflow state and event publication consistent across failures and retries. The carrier path does not call a real third-party API.
 
-**BLACKBOX** is engineered around one core guarantee:
-> ***Dependencies may fail, network calls may time out, requests may be duplicated, and workers may restart, but the internal system state will never be corrupted, and no side effect will ever be executed twice.***
+This repository is an active portfolio prototype, not production software. The latest local audit passed the Release build, 71 unit tests, 6 PostgreSQL integration tests, and all 31 Playwright scenarios. The Compose E2E run confirmed 83 Outbox events published to Kafka and 83 Inbox receipts persisted; a follow-up workflow smoke request was also observed in both systems. See [Engineering Status](ENGINEERING_STATUS.md) for the exact checks and remaining limits.
 
-For every workflow scenario executed through the engine, BLACKBOX outputs a formal verification scorecard:
+## Why this project exists
+
+Directly publishing a broker message after a database write creates a failure window: one side can succeed while the other fails. Blackbox demonstrates the transactional-outbox pattern and makes its delivery semantics and duplicate-handling boundaries explicit.
+
+## Engineering Highlights
+
+- **Transactional Outbox:** workflow state and its event are saved in one PostgreSQL transaction; a worker publishes pending records through Kafka.
+- **At-least-once delivery:** worker locks prevent two workers from publishing the same row concurrently. A crash after broker acknowledgement can still produce a duplicate, which consumers must handle.
+- **Inbox receipts:** the consumer stores `(consumer, topic, partition, offset)` before committing the Kafka offset. It currently records receipt only; no business handler is attached.
+- **Concurrency and idempotency:** PostgreSQL row locks protect inventory reservations; unique correlation IDs make concurrent duplicate create requests converge on one workflow.
+- **Bounded failure handling:** the Outbox retries publish failures and creates a DLQ record after five attempts.
+- **Explicit DLQ replay boundary:** only carrier simulator records can be replayed today. Kafka Outbox DLQ replay is not implemented and returns `501` instead of falsely reporting the event as replayed.
+- **API access:** application routes require `X-API-Key` with at least 32 UTF-8 bytes; liveness and database readiness endpoints are public.
+- **Verification scorecard:** checks scenario evidence provided to the engine. Missing inputs are marked not evaluated; it does not claim formal verification or production SLO measurements.
+- **Rule-based remediation prototype:** classifies example incidents and suggests actions. It does not execute the proposed remediation.
+- **Automated checks:** xUnit unit tests, PostgreSQL Testcontainers tests, and Playwright API scenarios.
+
+Other modules explore saga compensation, contract drift, CRDTs, Merkle inclusion proofs, and observability. They have different levels of maturity and are not all connected to durable, multi-node workflows. Their current boundaries are documented in [Engineering Status](ENGINEERING_STATUS.md).
+
+Experimental in-memory, scenario-evaluation, AI recommendation, and cryptography endpoints are mapped only in the Development environment. The signature and KEM are educational toy examples, not ML-DSA or ML-KEM, not FIPS compliant, and must never be used for security. See [the crypto demo limitations](docs/architecture/POST_QUANTUM_CRYPTOGRAPHY.md).
+
+## Architecture
 
 ```text
-========================================================================================
-                          BLACKBOX FORMAL GUARANTEE SCORECARD                           
-========================================================================================
- [✓] API Contract Compliance         : Valid CorrelationId, strict JSON payload schema
- [✓] Database State Integrity        : Monotonic versioning, temporal order (Created <= Updated)
- [✓] Event Sequence & Outbox State   : Outbox published, domain event DAG strictly ordered
- [✓] State Machine Legal Transitions : Transition DAG strictly validated, terminal immutable
- [✓] Business Invariants             : Capacity conserved (Avail + Alloc + Consumed == Initial)
- [✓] Security Rules & RBAC           : Zero-Trust authenticated, RBAC claims, SQLi sanitized
- [✓] Idempotency & Deduplication     : Unique inbox message processing, deduplication active
- [✓] No Duplicate Side Effects       : Zero side-effect duplication across external boundaries
- [✓] SLO Compliance (< 2.0s P95)     : Execution latency within 2000ms budget, 99.95% target
- [✓] Distributed Trace Completeness  : Unified TraceId across API ➔ DB ➔ Kafka ➔ Worker
-----------------------------------------------------------------------------------------
- RESULT: PASS: 13 invariants | 48 assertions | 12 events | 3 services | 2 external dependencies | 0 violations
-========================================================================================
+Client --X-API-Key--> ASP.NET Core API
+                         |
+                         | one PostgreSQL transaction
+                         v
+                 workflow + outbox
+                         |
+                         v
+              Outbox worker --publish--> Kafka
+                                             |
+                                             v
+                                  Inbox consumer
+                                             |
+                                             v
+                              inbox receipt in PostgreSQL
 ```
 
----
+PostgreSQL is the source of truth for workflow state and Outbox/Inbox records. Kafka delivery is **at least once**. The Outbox row lock prevents concurrent workers from publishing the same row at the same time. If publish succeeds and the database transaction then fails, the event can be published again after recovery. The Inbox uses the Kafka topic, partition, and offset to recognize a redelivery before committing the offset. Containers connect to Kafka at `kafka:9092`; host tools can connect through `localhost:29092` (or the configured `BLACKBOX_KAFKA_HOST_PORT`). Host tools can connect to PostgreSQL on `localhost:15432` by default; containers use `postgres:5432`.
 
-## 🧪 Comprehensive Testing Matrix (14 Testing Classes)
+## Example API flow
 
-Testing is not an afterthought in BLACKBOX—**the Automated Verification Engine is a primary product deliverable.**
+1. `POST /api/v1/workflows` with `X-API-Key` and `X-Idempotency-Key` creates the workflow and Outbox event atomically.
+2. `POST /api/v1/workflows/{id}/reserve` reserves stock under a PostgreSQL row lock.
+3. Compose creates the `blackbox.workflow.events` and `blackbox.resource.events` Kafka topics. The worker publishes Outbox events and persists consumer receipts in the Inbox.
+4. `POST /api/v1/workflows/{id}/complete` advances the workflow state machine.
 
-| Testing Type | Tooling & Framework | Purpose & Risk Class Covered | Verification Status |
-| :--- | :--- | :--- | :---: |
-| **1. Unit Testing** | `xUnit`, `FluentAssertions` | State machine transitions, invariants, CRDT math | **48 / 48 Passed** |
-| **2. Integration Testing** | `Testcontainers-dotnet` | Real containerized PostgreSQL 17 & Kafka ACID outbox | **4 / 4 Passed** |
-| **3. Contract Testing** | `ContractDriftMatrixGenerator` | Consumer-driven contract matrix ($v1 \leftrightarrow v2 \leftrightarrow v3$) | **9 Pairings Verified** |
-| **4. End-to-End (E2E)** | `TypeScript + Playwright` | Full multi-party lifecycle (`Create ➔ Reserve ➔ Complete`) | **11 Specs Passing** |
-| **5. API Testing** | `Playwright APIRequestContext` | Status codes, error payloads, header sanitization | **100% Pass** |
-| **6. Performance Lab** | `PostgreSQL EXPLAIN ANALYZE` | 100k events partial index benchmark (**163x speedup**) | **Verified** |
-| **7. Load Testing** | `k6` stress scenarios | Constant & ramping arrival rate (100 to 5,000 req/s) | **Verified** |
-| **8. Stress Testing** | `k6` beyond-capacity load | System saturation, backpressure, and load shedding | **Verified** |
-| **9. Soak Testing** | Long-duration execution | Memory growth, connection leaks, Kafka consumer lag | **Verified** |
-| **10. Chaos Testing** | `Shopify Toxiproxy` | Network latency spikes (5s), TCP resets, Kafka outage | **4 Experiments Documented** |
-| **11. Fuzz Testing** | `api-payload-fuzzing.spec.ts` | Malformed JSON, null bytes, nested JSON bombs, large payloads | **Passed (0 Unhandled 500s)** |
-| **12. Mutation Testing** | `Stryker.NET` | Mutating operators (`>` to `>=`, inverted guards) | **91.4% Mutation Score** |
-| **13. Property-Based** | `PropertyBasedWorkflowEngine` | 200 randomized command sequences (12,000 invariant checks) | **100% Preserved** |
-| **14. Security Testing** | `OWASP API Security Suite` | BOLA/IDOR, SQL injection probes, replay attack detection | **4 / 4 Specs Passed** |
+Reusing the same idempotency key with a different JSON value returns `409 Conflict`. Object key order and insignificant whitespace do not change the payload value, so a PostgreSQL `jsonb` round trip does not break retries.
+Workflow payloads must contain valid JSON, must not contain a U+0000 null character (which PostgreSQL `jsonb` cannot store), and are limited to 256 KiB; invalid JSON receives `400 Bad Request` and oversized payloads receive `413 Payload Too Large`.
 
----
+See the endpoint handlers in [`src/Blackbox.Api/Program.cs`](src/Blackbox.Api/Program.cs) and the orchestration logic in [`WorkflowOrchestrator.cs`](src/Blackbox.Infrastructure/Services/WorkflowOrchestrator.cs).
 
-## 📁 Golden Test Scenarios & Deterministic Incident Replay
+## My Contribution
 
-The `/scenarios` directory contains standardized production failure manifests:
+This repository contains the implementation of the API, workflow and event-processing path, infrastructure adapters, scenario verification, automated tests, and local development setup. Experimental modules are called out separately where they are not integrated into the durable workflow.
 
-- [`duplicate-request.json`](scenarios/duplicate-request.json): Ingestion storm with duplicate `X-Idempotency-Key` within 50ms.
-- [`provider-timeout.json`](scenarios/provider-timeout.json): External 3PL carrier 5,000ms latency spike and circuit breaker trip.
-- [`out-of-order-events.json`](scenarios/out-of-order-events.json): Webhook arrives before database transaction commit finishes.
-- [`db-deadlock.json`](scenarios/db-deadlock.json): 50 concurrent buyers competing for 1 remaining SKU (`SELECT ... FOR UPDATE`).
-- [`schema-breaking-change.json`](scenarios/schema-breaking-change.json): Upstream producer removes required field, blocking downstream deployment.
-- [`retry-storm.json`](scenarios/retry-storm.json): 1,000 rapid retry requests hitting a failing provider (jittered backoff & retry budget).
+## Key Systems
 
-### Deterministic Incident Replay (`INC-1842`)
-BLACKBOX captures full production incident context (events, timestamps, payload hashes, injected faults). Clicking **Replay Incident** executes the scenario deterministically:
-```csharp
-var replayResult = await runner.ReplayIncidentAsync(incidentSnapshot);
-// Output: "Incident INC-1842 successfully reproduced deterministically with fault 'TCP_CONNECTION_RESET'. Invariants fully verified."
-```
+### Transactional outbox
 
----
+Order state and the event to publish are written in the same PostgreSQL transaction. A separate worker claims pending rows and publishes them to Kafka. This closes the database/broker dual-write gap, while retaining at-least-once delivery semantics: consumers must tolerate a duplicate after a publish succeeds but acknowledgement state is not committed.
 
-## 💼 Career Positioning: Why This Project?
+### Inbox receipt and workflow boundary
 
-Current job market analysis (September 2026) highlights high demand for software engineers who do not just "write endpoints," but understand distributed reliability, data integrity, and automated quality assurance.
+The consumer records Kafka topic, partition, and offset to establish receipt before offset commit. It does not yet attach a business handler, so the inbox is a delivery-deduplication boundary rather than a complete downstream order workflow.
 
-BLACKBOX uniquely validates qualifications for both:
+### Concurrent order creation
 
-1. **Junior / Mid .NET Backend Developer**:
-   - C# / .NET 10, ASP.NET Core, Entity Framework Core & Dapper.
-   - Transactional Outbox / Inbox Pattern preventing the dual-write problem.
-   - PostgreSQL pessimistic locking (`SELECT ... FOR UPDATE`) preventing race conditions.
-   - Apache Kafka event streaming with KRaft mode.
-   - Docker Compose, Kubernetes manifests (HPA, PDB, Ingress), and Azure Terraform IaC.
+Inventory reservation uses database locking, and a unique correlation identifier makes concurrent duplicate create requests converge. The PostgreSQL Testcontainers suite exercises five simultaneous duplicate-start requests and asserts that they produce one workflow and one Outbox record; it does not yet test concurrent inventory reservations.
 
-2. **Junior / Mid QA Automation Engineer / SDET**:
-   - Modern test automation with **TypeScript + Playwright** (REST, Webhooks, Replays).
-   - Containerized integration testing with **Testcontainers-dotnet**.
-   - Contract testing & schema evolution guards with **Pact** & Drift Matrix.
-   - High-concurrency load and race testing with **k6**.
-   - Advanced testing disciplines: **Mutation Testing (Stryker.NET 91.4%)**, **Property-Based Testing**, and **Chaos Engineering**.
 
----
+## Design Decisions and Trade-offs
 
-## 🚀 Quick Start & Verification
+- PostgreSQL is the source of truth for workflow and outbox state; Kafka delivery is at least once, so duplicates remain possible and consumers need idempotency.
+- The inbox records broker receipt but does not perform a business side effect yet. This keeps the current guarantee narrow and avoids claiming exactly-once processing.
+- The API uses one shared API key for a local portfolio demo; production identity, scoped authorization, key rotation, rate limiting, and TLS are out of scope. Keys shorter than 32 UTF-8 bytes are rejected.
+- Carrier outcomes are simulated in process; no partner account or API credential is required. The Polly pipeline is created by a scoped service, so breaker state is not retained across API requests. Do not treat it as a production circuit-breaker integration.
+- Experimental in-memory, evaluation, AI recommendation, and cryptography endpoints are not mapped when `ASPNETCORE_ENVIRONMENT` is `Production`; the default Compose profile is `Development` so the portfolio demonstrations remain available locally.
+- EF Core `EnsureCreated` keeps the disposable demo simple but is not an upgrade-safe schema migration strategy.
 
-### 1. Run Unit Tests (57 Tests)
+## Requirements
+
+- .NET SDK 10
+- Docker Desktop or Docker Engine with Compose v2
+- Node.js 22 and npm, for Playwright tests
+
+## Run locally
+
+1. Copy `.env.example` to `.env` and replace both values with local development secrets. Generate an API key with at least 32 random bytes, for example in PowerShell 7: `[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))`. The default host ports are API `5000`, PostgreSQL `15432`, and Kafka `29092`; change the corresponding `BLACKBOX_*_PORT` value in `.env` if a port is occupied.
+2. Start the stack from the repository root:
+
+   ```bash
+   docker compose up --build
+   ```
+
+3. Wait until the API readiness check responds:
+
+   ```bash
+   curl http://localhost:5000/health/ready
+   ```
+
+4. Call the API using the key from `.env`:
+
+   ```bash
+   curl -X POST http://localhost:5000/api/v1/workflows \
+     -H "X-API-Key: YOUR_LOCAL_KEY" \
+     -H "X-Idempotency-Key: demo-order-001" \
+     -H "Content-Type: application/json" \
+     -d '{"payloadJson":"{\"orderId\":\"demo-order-001\"}"}'
+   ```
+
+Swagger and experimental endpoints are available only in Development. Application endpoints require `X-API-Key`. `/health` is a liveness probe; `/health/ready` checks PostgreSQL connectivity. The API fails startup if schema creation or seed initialization fails. The local Compose credentials are for an isolated developer demo only.
+
+The Compose stack creates its two Kafka topics with a one-shot `kafka-init` service. If you run the Worker against a separately managed Kafka cluster, provision `blackbox.workflow.events` and `blackbox.resource.events` before starting the Worker.
+
+Stop the stack with `docker compose down`. Add `--volumes` only when you intentionally want to remove the local PostgreSQL data.
+
+## Testing
+
 ```bash
-dotnet test tests/Blackbox.UnitTests
+dotnet test tests/Blackbox.UnitTests/Blackbox.UnitTests.csproj
+dotnet test tests/Blackbox.IntegrationTests/Blackbox.IntegrationTests.csproj
 ```
 
-### 2. Run Integration Tests (Testcontainers + PostgreSQL)
-```bash
-dotnet test tests/Blackbox.IntegrationTests
+Integration tests use Testcontainers and require a working Docker daemon. Without `BLACKBOX_TESTCONTAINERS=true`, xUnit marks them skipped by design. With the flag enabled, a missing or unreachable Docker daemon fails the test run; skipped tests are not counted as passing PostgreSQL verification.
+
+```powershell
+$env:BLACKBOX_TESTCONTAINERS = "true"
+dotnet test tests/Blackbox.IntegrationTests/Blackbox.IntegrationTests.csproj
 ```
 
-### 3. Run Golden Scenarios, Property-Based & Post-Quantum Suites
-```bash
-dotnet test tests/Blackbox.UnitTests --filter "FullyQualifiedName~GoldenScenariosTests|PropertyBasedWorkflowTests|PostQuantumCryptographyTests|AutonomousRemediationAgentTests"
-```
+For the API tests, start the Compose stack first, then run:
 
-### 4. Run TypeScript Playwright E2E & Security Specs
-```bash
+```powershell
+$env:BLACKBOX_API_KEY = "YOUR_LOCAL_KEY"
+$env:BLACKBOX_API_URL = "http://localhost:5000"
 cd tests/blackbox-e2e
-npm install
-npx playwright test
+npm ci
+npx playwright install chromium
+npm test
 ```
 
-### 5. Start Full Local Environment with Docker
-```bash
-docker compose up -d
-# Swagger UI available at: http://localhost:5000/swagger
-```
+GitHub Actions builds Release, runs the .NET tests, starts the full Compose stack, waits for readiness, runs Playwright, and checks that Outbox events reached Kafka and were recorded by the Inbox. Failures fail the workflow.
 
----
+## Documentation
 
-## 🏛 Full Documentation & Runbooks
-- [Architectural Specification & Business Plan](docs/PROJECT_PLAN.md)
-- [Stryker.NET Mutation Testing Scorecard](docs/benchmarks/MUTATION_TESTING_REPORT.md)
-- [PostgreSQL 17 Performance Lab Benchmark (163x Speedup)](docs/benchmarks/SQL_PERFORMANCE_LAB.md)
-- [Shopify Toxiproxy Chaos Engineering Lab](docs/chaos/CHAOS_ENGINEERING_LAB.md)
-- [AI-Driven Autonomous Remediation & Self-Healing Platform](docs/architecture/AI_AUTONOMOUS_REMEDIATION.md)
-- [NIST Post-Quantum Cryptography (FIPS 204 Dilithium & FIPS 203 Kyber)](docs/architecture/POST_QUANTUM_CRYPTOGRAPHY.md)
-- [Service Mesh (Istio / Linkerd) & Zero-Trust mTLS](docs/architecture/SERVICE_MESH_ISTIO.md)
-- [Multi-Region Active-Active Replication & CRDTs](docs/architecture/MULTI_REGION_ACTIVE_ACTIVE_CRDT.md)
-- [eBPF Kernel-Level Network Observability](docs/architecture/EBPF_KERNEL_OBSERVABILITY.md)
-- [Zero-Knowledge Cryptographic Merkle Audit Trail](docs/architecture/ZERO_KNOWLEDGE_MERKLE_AUDIT.md)
+- [Engineering status and verified checks](ENGINEERING_STATUS.md)
+- [Architecture notes](docs/architecture/)
+- [Project direction and roadmap](docs/PROJECT_PLAN.md)
+- [Chaos test plan](docs/chaos/CHAOS_ENGINEERING_LAB.md)
+- [Performance lab plan](docs/benchmarks/SQL_PERFORMANCE_LAB.md)
+- [Mutation testing](docs/benchmarks/MUTATION_TESTING_REPORT.md)
+
+Architecture and lab documents distinguish implemented behavior from proposed work. Performance numbers and chaos-test outcomes are not claimed without reproducible run evidence.
+
+## Repository map
+
+| Path | Purpose |
+|---|---|
+| `src/Blackbox.Core` | Domain entities, state rules, contracts, and scenario verification |
+| `src/Blackbox.Infrastructure` | EF Core persistence, resource locking, Kafka producer, outbox processing, carrier simulator |
+| `src/Blackbox.Api` | HTTP API, API key authentication, liveness/readiness endpoints |
+| `src/Blackbox.Worker` | Outbox publisher and Kafka Inbox consumer |
+| `tests/Blackbox.UnitTests` | Fast domain/service tests |
+| `tests/Blackbox.IntegrationTests` | PostgreSQL Testcontainers tests |
+| `tests/blackbox-e2e` | Playwright API scenarios |
+| `docker-compose.yml` | PostgreSQL, Kafka, API, and worker for local development |
+
+## Code Tour
+
+- [`Program.cs`](src/Blackbox.Api/Program.cs) — HTTP routes, API-key boundary, liveness, and readiness.
+- [`WorkflowOrchestrator.cs`](src/Blackbox.Infrastructure/Services/WorkflowOrchestrator.cs) — workflow state transitions and transactional persistence.
+- `src/Blackbox.Infrastructure/Services/OutboxProcessor.cs` — pending message publication and retry/DLQ handling.
+- `tests/Blackbox.IntegrationTests/TransactionalOutboxTests.cs` — PostgreSQL-backed outbox behavior when Testcontainers are enabled.
+- `tests/blackbox-e2e/specs/` — API scenarios driven by Playwright.
+
+## Performance
+
+The repository contains performance lab plans, but no benchmark result is claimed here until it is reproducible from the checked-in workload and environment.
+
+## Known limitations
+
+- The API uses EF Core `EnsureCreated` for this small demo. It does not have an upgrade-safe migration workflow yet; do not use it to evolve a persistent production database.
+- The Inbox proves durable receipt/deduplication but does not execute a domain side effect. A real consumer must commit its business effect and Inbox record in the same database transaction.
+- The Outbox retries immediately on subsequent worker polls and has a fixed five-attempt ceiling; exponential backoff and operator-controlled replay need further work.
+- API key authentication is a simple portfolio example. Production deployment needs managed secrets, key rotation, scoped identities/authorization policies, rate limits, and TLS.
+- CRDT and audit ledger modules are in-memory demonstrations; multiple API replicas do not share their state.
+- The default Compose stack is local development, not a hardened production deployment.
+
+## Roadmap
+
+See [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md). The next reliability milestones are durable business effects in the Inbox, backoff and operator-managed Kafka DLQ replay, versioned migrations, and verified PostgreSQL/E2E runs.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+## Links
+
+- **GitHub:** [Mr444-dev/blackbox](https://github.com/Mr444-dev/blackbox)
+- **Portfolio:** [mr444-dev.github.io](https://mr444-dev.github.io/)
+
+
+## Author
+
+**Michał Rusinek** · [GitHub](https://github.com/Mr444-dev) · [Portfolio](https://mr444-dev.github.io/)

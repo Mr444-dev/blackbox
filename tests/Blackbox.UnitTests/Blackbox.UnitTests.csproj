@@ -21,6 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Blackbox.Api\Blackbox.Api.csproj" />
     <ProjectReference Include="..\..\src\Blackbox.Core\Blackbox.Core.csproj" />
     <ProjectReference Include="..\..\src\Blackbox.Infrastructure\Blackbox.Infrastructure.csproj" />
   </ItemGroup>

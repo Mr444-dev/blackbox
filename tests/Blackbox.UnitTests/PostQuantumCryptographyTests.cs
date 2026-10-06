@@ -14,7 +14,7 @@ public class PostQuantumCryptographyTests
     [Fact]
     public void Dilithium_SignAndVerify_ValidPayload_ReturnsTrue()
     {
-        // Arrange: Generate NIST FIPS 204 ML-DSA Dilithium keypair
+        // Arrange: Generate a key pair for the educational toy demo.
         var keyPair = _dilithiumSigner.GenerateKeyPair();
         byte[] auditPayload = Encoding.UTF8.GetBytes("WORKFLOW-AUDIT-MERKLE-ROOT:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 
@@ -23,8 +23,8 @@ public class PostQuantumCryptographyTests
 
         // Assert
         signature.Should().NotBeNull();
-        signature.Algorithm.Should().Be("NIST-FIPS-204-ML-DSA-Dilithium3");
-        signature.SecurityCategory.Should().Contain("Quantum-Resistant");
+        signature.Algorithm.Should().Be(PostQuantumDilithiumSigner.AlgorithmName);
+        signature.SecurityCategory.Should().Contain("not security reviewed");
 
         // Verify with matching public key
         bool isValid = _dilithiumSigner.Verify(auditPayload, signature, keyPair.PublicKey);
@@ -66,7 +66,7 @@ public class PostQuantumCryptographyTests
     [Fact]
     public void Kyber_EncapsulateAndDecapsulate_DerivesIdenticalSharedSecret()
     {
-        // Arrange: Generate NIST FIPS 203 ML-KEM Kyber keypair
+        // Arrange: Generate a key pair for the educational toy demo.
         var keyPair = _kyberKem.GenerateKeyPair();
 
         // Act 1: Sender encapsulates symmetric key using recipient's public key
@@ -75,7 +75,7 @@ public class PostQuantumCryptographyTests
         // Act 2: Recipient decapsulates symmetric key using secret key
         byte[] recipientSharedSecret = _kyberKem.Decapsulate(encapsulation.Ciphertext, keyPair.PrivateKey);
 
-        // Assert: Both parties derived the exact same 256-bit post-quantum symmetric key
+        // Assert: Both parties derive the same demo shared secret.
         encapsulation.SharedSecret256.Should().NotBeNull();
         encapsulation.SharedSecret256.Length.Should().Be(32);
         recipientSharedSecret.Should().Equal(encapsulation.SharedSecret256);
@@ -96,7 +96,7 @@ public class PostQuantumCryptographyTests
         seal.Should().NotBeNull();
         seal.WorkflowId.Should().Be(workflowId);
         seal.MerkleRootHash.Should().Be(merkleRootHash);
-        seal.Algorithm.Should().Be("NIST-FIPS-204-ML-DSA-Dilithium3");
+        seal.Algorithm.Should().Be(PostQuantumDilithiumSigner.AlgorithmName);
 
         // Verify valid seal
         bool isValid = _auditSealer.VerifySeal(seal);

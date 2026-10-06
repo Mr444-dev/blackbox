@@ -17,13 +17,18 @@ test.describe('State Machine Invariant Violations', () => {
   test('Attempting to complete a completed workflow should return 409 Conflict', async ({ request }) => {
     const correlationId = `INVARIANT-TERM-${Date.now()}`;
 
-    // 1. Create and complete workflow
+    // 1. Create, reserve, and complete workflow through valid transitions.
     const createResp = await request.post('/api/v1/workflows', {
       headers: { 'X-Idempotency-Key': correlationId },
       data: { payloadJson: '{}' }
     });
     const workflow = await createResp.json();
     const workflowId = workflow.id;
+
+    const reserveResp = await request.post(`/api/v1/workflows/${workflowId}/reserve`, {
+      data: { resourceId: 'SKU-PHONE-002', quantity: 1 }
+    });
+    expect(reserveResp.status()).toBe(200);
 
     // Transition to Completed
     const completeResp1 = await request.post(`/api/v1/workflows/${workflowId}/complete`);

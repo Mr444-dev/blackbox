@@ -1,5 +1,10 @@
 import { defineConfig } from '@playwright/test';
 
+const apiKey = process.env.BLACKBOX_API_KEY;
+if (!apiKey) {
+  throw new Error('Set BLACKBOX_API_KEY before running the Blackbox API tests.');
+}
+
 export default defineConfig({
   testDir: './specs',
   timeout: 30000,
@@ -20,6 +25,7 @@ export default defineConfig({
     extraHTTPHeaders: {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
+      'X-API-Key': apiKey,
     },
   },
 });
