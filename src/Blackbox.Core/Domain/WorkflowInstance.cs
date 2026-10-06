@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Blackbox.Core.Domain.Events;
 
 namespace Blackbox.Core.Domain;
@@ -101,7 +102,7 @@ public class WorkflowInstance
         EnsureNotTerminal();
 
         Status = WorkflowStatus.Failed;
-        ErrorDetailsJson = errorDetailsJson ?? $"{{\"reason\":\"{reason}\"}}";
+        ErrorDetailsJson = errorDetailsJson ?? JsonSerializer.Serialize(new { reason });
         Touch();
         _domainEvents.Add(new WorkflowFailedEvent(Id, CorrelationId, reason));
     }
@@ -112,7 +113,7 @@ public class WorkflowInstance
         EnsureTransitionAllowed(WorkflowStatus.Cancelled);
 
         Status = WorkflowStatus.Cancelled;
-        ErrorDetailsJson = $"{{\"cancellation_reason\":\"{reason}\"}}";
+        ErrorDetailsJson = JsonSerializer.Serialize(new { cancellation_reason = reason });
         Touch();
         _domainEvents.Add(new WorkflowCancelledEvent(Id, CorrelationId, reason));
     }

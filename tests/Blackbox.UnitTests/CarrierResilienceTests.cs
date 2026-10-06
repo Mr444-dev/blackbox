@@ -44,7 +44,7 @@ public class CarrierResilienceTests
     }
 
     [Fact]
-    public async Task DispatchShipment_FailThreeTimesThenSucceed_PollyShouldRetryAndRecover()
+    public async Task DispatchShipment_FailTwiceThenSucceed_PollyShouldRetryAndRecover()
     {
         // Arrange
         await using var dbContext = CreateInMemoryDbContext();
@@ -60,7 +60,7 @@ public class CarrierResilienceTests
         var result = await service.DispatchShipmentAsync(
             workflow.Id, 
             "456 High St", 
-            CarrierSimulatorMode.FailThreeTimesThenSucceed);
+            CarrierSimulatorMode.FailTwiceThenSucceed);
 
         // Assert: Polly automatically retried and succeeded on attempt 3
         result.Success.Should().BeTrue();

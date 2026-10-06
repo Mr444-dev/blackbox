@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('AI-Driven Autonomous Remediation Engine', () => {
+test.describe('Rule-Based Remediation Recommendation Prototype', () => {
 
-  test('POST /api/v1/ai/diagnose analyzes payment settlement failure and recommends saga rollback', async ({ request }) => {
+  test('POST /api/v1/ai/diagnose classifies a payment failure and recommends saga rollback', async ({ request }) => {
     const incidentContext = {
       incidentId: `INC-AI-E2E-${Date.now()}`,
       workflowId: 'e2e00000-0000-0000-0000-000000000101',
@@ -31,7 +31,7 @@ test.describe('AI-Driven Autonomous Remediation Engine', () => {
     expect(recommendation.requiresHumanApproval).toBe(false);
     expect(recommendation.suggestedPolicyJson).toContain('REVERSE_SAGA_COMPENSATION');
 
-    // 2. Execute Recommended Remediation Policy Autonomously
+    // 2. The prototype must not claim it executed a policy without a command handler.
     const remResponse = await request.post('/api/v1/ai/remediate', {
       data: {
         context: incidentContext,
@@ -42,9 +42,9 @@ test.describe('AI-Driven Autonomous Remediation Engine', () => {
     expect(remResponse.status()).toBe(200);
     const executionResult = await remResponse.json();
 
-    expect(executionResult.success).toBe(true);
-    expect(executionResult.stateAfterRemediation).toBe('COMPENSATED');
-    expect(executionResult.executionNotes).toContain('Invariants preserved');
+    expect(executionResult.success).toBe(false);
+    expect(executionResult.stateAfterRemediation).toBe('NOT_EXECUTED');
+    expect(executionResult.executionNotes).toContain('no remediation was executed');
   });
 
   test('POST /api/v1/ai/remediate enforces human approval guardrail for unknown anomalies', async ({ request }) => {

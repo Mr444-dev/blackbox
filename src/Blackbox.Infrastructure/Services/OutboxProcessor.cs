@@ -29,20 +29,30 @@ public class OutboxProcessor : IOutboxProcessor
 
     public async Task<int> ProcessPendingMessagesAsync(int batchSize = 50, CancellationToken ct = default)
     {
-        var pendingMessages = await _dbContext.OutboxMessages
-            .Where(m => m.Status == OutboxStatus.Pending)
-            .OrderBy(m => m.CreatedAt)
-            .Take(batchSize)
-            .ToListAsync(ct);
-
-        if (pendingMessages.Count == 0)
-            return 0;
-
-        _logger.LogInformation("Processing {Count} pending outbox messages.", pendingMessages.Count);
         int processedCount = 0;
-
-        foreach (var message in pendingMessages)
+        for (var i = 0; i < batchSize; i++)
         {
+            // Hold the row lock through broker acknowledgement and the database update.
+            // If the process crashes before commit, PostgreSQL rolls back and the row is retried.
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync(ct);
+            var messages = await _dbContext.OutboxMessages
+                .FromSqlRaw("""
+                    SELECT * FROM outbox_messages
+                    WHERE status = 'Pending'
+                    ORDER BY created_at
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                    """)
+                .ToListAsync(ct);
+            var message = messages.FirstOrDefault();
+
+            if (message is null)
+            {
+                await transaction.CommitAsync(ct);
+                break;
+            }
+
+            message.MarkProcessing();
             try
             {
                 await _eventPublisher.PublishAsync(message.Topic, message.MessageKey, message.Payload, ct);
@@ -52,13 +62,15 @@ public class OutboxProcessor : IOutboxProcessor
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to publish outbox message {MessageId} to topic {Topic}.", message.Id, message.Topic);
-                message.MarkFailed(ex.Message);
+                message.MarkRetryableFailure(ex.Message, maxAttempts: 5);
 
-                // If repeated failures exceed threshold, record in DLQ
-                if (message.RetryCount >= 5)
+                if (message.Status == OutboxStatus.Failed)
                 {
+                    Guid? workflowId = Guid.TryParse(message.MessageKey, out var parsedWorkflowId)
+                        ? parsedWorkflowId
+                        : null;
                     var dlqMessage = DeadLetterMessage.Create(
-                        workflowId: null,
+                        workflowId,
                         source: "OutboxProcessor",
                         payload: message.Payload,
                         exceptionMessage: $"Outbox dispatch exceeded retry threshold: {ex.Message}",
@@ -67,9 +79,11 @@ public class OutboxProcessor : IOutboxProcessor
                     await _dbContext.DeadLetterMessages.AddAsync(dlqMessage, ct);
                 }
             }
+
+            await _dbContext.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
         }
 
-        await _dbContext.SaveChangesAsync(ct);
         return processedCount;
     }
 }

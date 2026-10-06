@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Blackbox.Core.Domain;
 using Blackbox.Core.Domain.Events;
 using FluentAssertions;
@@ -109,5 +110,31 @@ public class WorkflowStateMachineTests
         // Assert
         act.Should().Throw<WorkflowInvariantException>()
            .WithMessage("*TerminalStateImmutability*");
+    }
+
+    [Theory]
+    [InlineData("provider said \"declined\"")]
+    [InlineData("first line\nsecond line")]
+    public void Fail_WithSpecialCharacters_StoresValidJson(string reason)
+    {
+        var workflow = WorkflowInstance.Create("CORR-FAIL-JSON", "{}");
+
+        workflow.Fail(reason);
+
+        using var details = JsonDocument.Parse(workflow.ErrorDetailsJson!);
+        details.RootElement.GetProperty("reason").GetString().Should().Be(reason);
+    }
+
+    [Theory]
+    [InlineData("user requested \"stop\"")]
+    [InlineData("first line\nsecond line")]
+    public void Cancel_WithSpecialCharacters_StoresValidJson(string reason)
+    {
+        var workflow = WorkflowInstance.Create("CORR-CANCEL-JSON", "{}");
+
+        workflow.Cancel(reason);
+
+        using var details = JsonDocument.Parse(workflow.ErrorDetailsJson!);
+        details.RootElement.GetProperty("cancellation_reason").GetString().Should().Be(reason);
     }
 }

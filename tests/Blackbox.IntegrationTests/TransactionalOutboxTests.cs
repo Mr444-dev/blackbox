@@ -7,7 +7,6 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Blackbox.IntegrationTests;
 
@@ -25,28 +24,14 @@ public class SpyEventPublisher : IEventPublisher
 public class TransactionalOutboxTests : IClassFixture<PostgreSqlFixture>
 {
     private readonly PostgreSqlFixture _fixture;
-    private readonly ITestOutputHelper _output;
-
-    public TransactionalOutboxTests(PostgreSqlFixture fixture, ITestOutputHelper output)
+    public TransactionalOutboxTests(PostgreSqlFixture fixture)
     {
         _fixture = fixture;
-        _output = output;
     }
 
-    private bool SkipIfDockerUnavailable()
-    {
-        if (!_fixture.IsDockerAvailable)
-        {
-            _output.WriteLine($"SKIPPED: Docker daemon is not active. Reason: {_fixture.DockerUnavailableReason}");
-            return true;
-        }
-        return false;
-    }
-
-    [Fact]
+    [DockerFact]
     public async Task StartWorkflow_ShouldAtomicallyPersistWorkflowAndOutboxMessage()
     {
-        if (SkipIfDockerUnavailable()) return;
 
         // Arrange
         await using var dbContext = _fixture.CreateDbContext();
@@ -75,10 +60,9 @@ public class TransactionalOutboxTests : IClassFixture<PostgreSqlFixture>
         outboxMessage.PublishedAt.Should().BeNull();
     }
 
-    [Fact]
+    [DockerFact]
     public async Task StartWorkflow_DuplicateRequest_ShouldReturnSameWorkflowWithoutDuplicateOutbox()
     {
-        if (SkipIfDockerUnavailable()) return;
 
         // Arrange
         await using var dbContext = _fixture.CreateDbContext();
@@ -103,10 +87,49 @@ public class TransactionalOutboxTests : IClassFixture<PostgreSqlFixture>
         outboxCount.Should().Be(1);
     }
 
-    [Fact]
+    [DockerFact]
+    public async Task StartWorkflow_ConcurrentDuplicateRequests_ShouldConvergeOnOneWorkflowAndOutbox()
+    {
+        var correlationId = $"IDEM-CONCURRENT-{Guid.NewGuid():N}";
+
+        async Task<Guid> StartWithOwnContext()
+        {
+            await using var dbContext = _fixture.CreateDbContext();
+            var orchestrator = new WorkflowOrchestrator(
+                dbContext,
+                new ResourceRepository(dbContext),
+                NullLogger<WorkflowOrchestrator>.Instance);
+            return (await orchestrator.StartWorkflowAsync(correlationId, "{\"order\":\"race\"}")).Id;
+        }
+
+        var workflowIds = await Task.WhenAll(Enumerable.Range(0, 5).Select(_ => StartWithOwnContext()));
+        workflowIds.Distinct().Should().ContainSingle();
+
+        await using var verificationContext = _fixture.CreateDbContext();
+        (await verificationContext.Workflows.CountAsync(w => w.CorrelationId == correlationId)).Should().Be(1);
+        (await verificationContext.OutboxMessages.CountAsync(m => m.MessageKey == workflowIds[0].ToString())).Should().Be(1);
+    }
+
+    [DockerFact]
+    public async Task StartWorkflow_ReusedIdempotencyKeyWithDifferentPayload_ShouldBeRejected()
+    {
+        await using var dbContext = _fixture.CreateDbContext();
+        var orchestrator = new WorkflowOrchestrator(
+            dbContext,
+            new ResourceRepository(dbContext),
+            NullLogger<WorkflowOrchestrator>.Instance);
+        var key = $"IDEM-PAYLOAD-{Guid.NewGuid():N}";
+
+        await orchestrator.StartWorkflowAsync(key, "{\"amount\":10}");
+        var act = () => orchestrator.StartWorkflowAsync(key, "{\"amount\":99}");
+
+        await act.Should().ThrowAsync<WorkflowInvariantException>()
+            .WithMessage("*[Invariant Violated: IdempotencyKeyPayloadMismatch]*");
+    }
+
+    [DockerFact]
     public async Task OutboxProcessor_ShouldPublishPendingMessagesAndMarkThemPublished()
     {
-        if (SkipIfDockerUnavailable()) return;
 
         // Arrange
         await using var dbContext = _fixture.CreateDbContext();
@@ -132,10 +155,9 @@ public class TransactionalOutboxTests : IClassFixture<PostgreSqlFixture>
         updatedMessage.PublishedAt.Should().NotBeNull();
     }
 
-    [Fact]
+    [DockerFact]
     public async Task ReserveResource_WithPessimisticLock_ShouldEnforceCapacityInvariant()
     {
-        if (SkipIfDockerUnavailable()) return;
 
         // Arrange
         await using var dbContext = _fixture.CreateDbContext();

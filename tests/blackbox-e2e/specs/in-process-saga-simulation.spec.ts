@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Distributed Saga Orchestrator & Compensating Transactions', () => {
+test.describe('In-Process Saga Simulation and Compensation', () => {
 
-  test('Successful multi-step Saga should commit all steps and complete workflow', async ({ request }) => {
+  test('Successful saga simulation reports its completed steps', async ({ request }) => {
     const correlationId = `SAGA-OK-${Date.now()}`;
 
     const response = await request.post('/api/v1/workflows/saga', {
@@ -23,7 +23,7 @@ test.describe('Distributed Saga Orchestrator & Compensating Transactions', () =>
     expect(body.executedSteps).toEqual(['ReserveInventory', 'DispatchCarrier', 'ProcessPayment']);
   });
 
-  test('Failed Payment step should trigger automated reverse compensation rollback', async ({ request }) => {
+  test('Simulated payment failure reports compensation in reverse step order', async ({ request }) => {
     const correlationId = `SAGA-FAIL-${Date.now()}`;
 
     const response = await request.post('/api/v1/workflows/saga', {

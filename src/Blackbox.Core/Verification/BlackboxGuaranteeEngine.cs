@@ -10,6 +10,8 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         WorkflowScenarioContext context, 
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(context);
+        cancellationToken.ThrowIfCancellationRequested();
         var pillars = new List<GuaranteePillarResult>();
 
         // 1. API Contract Verification
@@ -37,7 +39,7 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         pillars.Add(VerifySideEffects(context));
 
         // 9. SLO Compliance (Latency & Error Budget)
-        pillars.Add(VerifySloCompliance(context));
+        pillars.Add(VerifyScenarioLatency(context));
 
         // 10. Distributed Trace Completeness
         pillars.Add(VerifyTraceCompleteness(context));
@@ -49,9 +51,9 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
             CorrelationId = context.Workflow.CorrelationId,
             ExecutionDurationMs = context.ExecutionDurationMs,
             Pillars = pillars,
-            TotalEventsPreserved = context.Workflow.DomainEvents.Count + context.OutboxMessageIds.Count,
-            TotalServicesInvolved = Math.Max(1, context.TraceSpans.Select(s => s.ServiceName).Distinct().Count()),
-            TotalExternalDependencies = 2 // Mock Carrier & Payment Provider
+            TotalEventsPreserved = context.OutboxMessageIds.Count,
+            TotalServicesInvolved = context.TraceSpans.Select(s => s.ServiceName).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().Count(),
+            TotalExternalDependencies = Math.Max(0, context.ExternalDependencyCount)
         };
 
         return Task.FromResult(report);
@@ -91,7 +93,9 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         {
             PillarName = "API Contract",
             Passed = violations.Count == 0,
-            Summary = violations.Count == 0 ? "API contract and payload schema fully conformant." : "API contract violations detected.",
+            Summary = violations.Count == 0
+                ? "Workflow identifiers and payload JSON syntax checks passed."
+                : "Workflow identifier or payload JSON syntax checks failed.",
             InvariantsEvaluated = invariants,
             AssertionsEvaluated = assertions,
             Details = details,
@@ -120,9 +124,9 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
 
         return new GuaranteePillarResult
         {
-            PillarName = "Database State",
+            PillarName = "Workflow State Consistency",
             Passed = violations.Count == 0,
-            Summary = violations.Count == 0 ? "Database record integrity and version invariants satisfied." : "Database state corrupt.",
+            Summary = violations.Count == 0 ? "Workflow object version and timestamp checks passed." : "Workflow state consistency violations detected.",
             InvariantsEvaluated = invariants,
             AssertionsEvaluated = assertions,
             Details = details,
@@ -160,7 +164,7 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         {
             PillarName = "Event Sequence",
             Passed = violations.Count == 0,
-            Summary = violations.Count == 0 ? "Event ordering and domain publication sequence validated." : "Event sequence violation.",
+            Summary = violations.Count == 0 ? "Domain event ordering checks passed for the events present in the scenario." : "Domain event sequence violation.",
             InvariantsEvaluated = invariants,
             AssertionsEvaluated = assertions,
             Details = details,
@@ -202,7 +206,7 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         {
             PillarName = "State Machine Transitions",
             Passed = violations.Count == 0,
-            Summary = violations.Count == 0 ? "State machine legal transitions and terminal guards verified." : "State machine violation.",
+            Summary = violations.Count == 0 ? "The supplied workflow snapshot passed the terminal-state guard check." : "State machine guard violation.",
             InvariantsEvaluated = invariants,
             AssertionsEvaluated = assertions,
             Details = details,
@@ -215,7 +219,7 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         var details = new List<string>();
         var violations = new List<string>();
         int assertions = 0;
-        int invariants = 3; // (1) Non-negative Available; (2) Non-negative Allocated; (3) Capacity conservation
+        int invariants = 3; // Available, allocated, and consumed quantities must be non-negative.
 
         if (ctx.Resource != null)
         {
@@ -232,19 +236,28 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
                 details.Add($"Allocated quantity non-negative: {ctx.Resource.AllocatedQuantity}");
 
             assertions++;
-            details.Add($"Total tracked capacity: Available ({ctx.Resource.AvailableQuantity}) + Allocated ({ctx.Resource.AllocatedQuantity}) = {ctx.Resource.AvailableQuantity + ctx.Resource.AllocatedQuantity}");
+            if (ctx.Resource.ConsumedQuantity < 0)
+                violations.Add($"Consumed quantity negative: {ctx.Resource.ConsumedQuantity}");
+            else
+                details.Add($"Consumed quantity non-negative: {ctx.Resource.ConsumedQuantity}");
         }
         else
         {
-            assertions++;
-            details.Add("No shared physical inventory resource attached to this workflow scenario.");
+            return new GuaranteePillarResult
+            {
+                PillarName = "Business Invariants",
+                Evaluated = false,
+                Passed = false,
+                Summary = "Not evaluated: no resource state was supplied.",
+                Details = details
+            };
         }
 
         return new GuaranteePillarResult
         {
             PillarName = "Business Invariants",
             Passed = violations.Count == 0,
-            Summary = violations.Count == 0 ? "Domain invariants (capacity bounds, non-negative quantities) preserved." : "Domain invariants violated.",
+            Summary = violations.Count == 0 ? "Non-negative inventory quantity checks passed for the supplied resource snapshot." : "Inventory quantity invariant violations detected.",
             InvariantsEvaluated = invariants,
             AssertionsEvaluated = assertions,
             Details = details,
@@ -257,32 +270,58 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         var details = new List<string>();
         var violations = new List<string>();
         int assertions = 0;
-        int invariants = 1;
+        var audit = ctx.SecurityAudit;
+        if (audit is null || (audit.IsAuthenticated is null && audit.HasValidRole is null && audit.RateLimitPassed is null && audit.PayloadSanitized is null))
+        {
+            return new GuaranteePillarResult
+            {
+                PillarName = "Security Scenario Checks",
+                Evaluated = false,
+                Passed = false,
+                Summary = "Not evaluated: no security signals were supplied.",
+                Details = details
+            };
+        }
 
-        assertions++;
-        if (!ctx.SecurityAudit.IsAuthenticated)
-            violations.Add("Caller must be authenticated.");
-        else
-            details.Add($"Caller identity: {ctx.SecurityAudit.CallerIdentity}");
-
-        assertions++;
-        if (!ctx.SecurityAudit.HasValidRole)
-            violations.Add("Caller lacks required authorization role.");
-        else
-            details.Add("Authorization RBAC claims valid.");
-
-        assertions++;
-        if (!ctx.SecurityAudit.PayloadSanitized)
-            violations.Add("Payload contains unescaped malicious scripts or SQL injection sequences.");
-        else
-            details.Add("Payload sanitization & injection defenses verified.");
+        if (audit.IsAuthenticated is bool authenticated)
+        {
+            assertions++;
+            if (!authenticated)
+                violations.Add("Scenario input reports an unauthenticated caller.");
+            else
+                details.Add($"Scenario input reports authenticated caller '{audit.CallerIdentity}'.");
+        }
+        if (audit.HasValidRole is bool hasValidRole)
+        {
+            assertions++;
+            if (!hasValidRole)
+                violations.Add("Scenario input reports that the caller lacks the required role.");
+            else
+                details.Add("Scenario input reports the required role.");
+        }
+        if (audit.RateLimitPassed is bool rateLimitPassed)
+        {
+            assertions++;
+            if (!rateLimitPassed)
+                violations.Add("Scenario input reports that the rate limit was exceeded.");
+            else
+                details.Add("Scenario input reports that the rate limit was not exceeded.");
+        }
+        if (audit.PayloadSanitized is bool payloadSanitized)
+        {
+            assertions++;
+            if (!payloadSanitized)
+                violations.Add("Scenario input reports that payload sanitization failed.");
+            else
+                details.Add("Scenario input reports payload sanitization passed; the engine does not scan the payload.");
+        }
 
         return new GuaranteePillarResult
         {
-            PillarName = "Security Rules",
+            PillarName = "Security Scenario Checks",
             Passed = violations.Count == 0,
-            Summary = violations.Count == 0 ? "Zero-Trust authentication, RBAC, and payload hygiene confirmed." : "Security violation.",
-            InvariantsEvaluated = invariants,
+            Summary = violations.Count == 0 ? "Supplied security scenario signals passed; no independent security controls were tested." : "Supplied security scenario signals include a violation.",
+            InvariantsEvaluated = assertions,
             AssertionsEvaluated = assertions,
             Details = details,
             Violations = violations
@@ -296,8 +335,20 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         int assertions = 0;
         int invariants = 1;
 
+        if (ctx.InboxMessageIds.Count == 0)
+        {
+            return new GuaranteePillarResult
+            {
+                PillarName = "Idempotency & Deduplication",
+                Evaluated = false,
+                Passed = false,
+                Summary = "Not evaluated: no Inbox message IDs were supplied.",
+                Details = details
+            };
+        }
+
         assertions++;
-        var duplicateInboxIds = ctx.InboxProcessedMessageIds
+        var duplicateInboxIds = ctx.InboxMessageIds
             .GroupBy(x => x)
             .Where(g => g.Count() > 1)
             .Select(g => g.Key)
@@ -306,13 +357,13 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         if (duplicateInboxIds.Count > 0)
             violations.Add($"Duplicate message IDs processed in inbox: {string.Join(", ", duplicateInboxIds)}");
         else
-            details.Add($"Processed {ctx.InboxProcessedMessageIds.Count} unique inbox messages without duplicate consumption.");
+            details.Add($"No duplicate IDs were found among {ctx.InboxMessageIds.Count} supplied Inbox receipts.");
 
         return new GuaranteePillarResult
         {
             PillarName = "Idempotency & Deduplication",
             Passed = violations.Count == 0,
-            Summary = violations.Count == 0 ? "Strict idempotency and message deduplication guaranteed." : "Duplicate message processing detected.",
+            Summary = violations.Count == 0 ? "No duplicate IDs were found in the supplied Inbox sample." : "Duplicate IDs were found in the supplied Inbox sample.",
             InvariantsEvaluated = invariants,
             AssertionsEvaluated = assertions,
             Details = details,
@@ -327,23 +378,35 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         int assertions = 0;
         int invariants = 1;
 
+        if (ctx.SideEffects.Count == 0)
+        {
+            return new GuaranteePillarResult
+            {
+                PillarName = "No Duplicate Side Effects",
+                Evaluated = false,
+                Passed = false,
+                Summary = "Not evaluated: no side-effect records were supplied.",
+                Details = details
+            };
+        }
+
         assertions++;
         var duplicateKeys = ctx.SideEffects
-            .GroupBy(s => s.IdempotencyKey)
+            .GroupBy(s => (s.EffectType, s.IdempotencyKey))
             .Where(g => g.Count() > 1)
-            .Select(g => g.Key)
+            .Select(g => $"{g.Key.EffectType}:{g.Key.IdempotencyKey}")
             .ToList();
 
         if (duplicateKeys.Count > 0)
             violations.Add($"Duplicate side-effect execution detected for IdempotencyKey: {string.Join(", ", duplicateKeys)}");
         else
-            details.Add($"All {ctx.SideEffects.Count} external side effects executed with unique idempotency keys.");
+            details.Add($"No duplicate (effect type, idempotency key) pairs were found in {ctx.SideEffects.Count} supplied records.");
 
         return new GuaranteePillarResult
         {
             PillarName = "No Duplicate Side Effects",
             Passed = violations.Count == 0,
-            Summary = violations.Count == 0 ? "Zero side-effect duplication verified across distributed boundaries." : "Side effect duplication detected.",
+            Summary = violations.Count == 0 ? "The supplied side-effect sample contains no duplicate keys." : "Duplicate side effects were found in the supplied sample.",
             InvariantsEvaluated = invariants,
             AssertionsEvaluated = assertions,
             Details = details,
@@ -351,7 +414,7 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         };
     }
 
-    private static GuaranteePillarResult VerifySloCompliance(WorkflowScenarioContext ctx)
+    private static GuaranteePillarResult VerifyScenarioLatency(WorkflowScenarioContext ctx)
     {
         var details = new List<string>();
         var violations = new List<string>();
@@ -359,20 +422,19 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         int invariants = 1;
 
         assertions++;
-        const double P95ThresholdMs = 2000.0;
-        if (ctx.ExecutionDurationMs > P95ThresholdMs)
-            violations.Add($"Execution duration ({ctx.ExecutionDurationMs:F1}ms) breached P95 SLO threshold ({P95ThresholdMs}ms).");
+        const double ScenarioLatencyLimitMs = 2000.0;
+        if (!double.IsFinite(ctx.ExecutionDurationMs) || ctx.ExecutionDurationMs < 0)
+            violations.Add($"Execution duration must be a finite non-negative value. Actual: {ctx.ExecutionDurationMs}ms.");
+        else if (ctx.ExecutionDurationMs > ScenarioLatencyLimitMs)
+            violations.Add($"Scenario duration ({ctx.ExecutionDurationMs:F1}ms) exceeded the configured limit ({ScenarioLatencyLimitMs:F1}ms).");
         else
-            details.Add($"Execution latency {ctx.ExecutionDurationMs:F1}ms satisfies P95 budget (< 2000ms).");
-
-        assertions++;
-        details.Add("Workflow availability meets the 99.95% SLO commitment.");
+            details.Add($"Single scenario duration {ctx.ExecutionDurationMs:F1}ms is within the configured limit. This is not a P95 or availability measurement.");
 
         return new GuaranteePillarResult
         {
-            PillarName = "SLO Compliance",
+            PillarName = "Scenario Latency Budget",
             Passed = violations.Count == 0,
-            Summary = violations.Count == 0 ? "SLO latency (< 2.0s P95) and error budget standards satisfied." : "SLO regression detected.",
+            Summary = violations.Count == 0 ? "The single-run scenario duration is within its configured limit; production SLOs are not measured here." : "Scenario latency check failed.",
             InvariantsEvaluated = invariants,
             AssertionsEvaluated = assertions,
             Details = details,
@@ -390,22 +452,31 @@ public class BlackboxGuaranteeEngine : IBlackboxGuaranteeEngine
         assertions++;
         if (ctx.TraceSpans.Count == 0)
         {
-            details.Add("Direct local execution context; synthetic trace verified.");
+            return new GuaranteePillarResult
+            {
+                PillarName = "Distributed Trace Completeness",
+                Evaluated = false,
+                Passed = false,
+                Summary = "Not evaluated: no trace spans were supplied.",
+                Details = details
+            };
         }
         else
         {
             var distinctTraceIds = ctx.TraceSpans.Select(s => s.TraceId).Distinct().ToList();
-            if (distinctTraceIds.Count > 1)
+            if (distinctTraceIds.Count > 1 || distinctTraceIds.Any(string.IsNullOrWhiteSpace))
                 violations.Add($"Distributed trace fragmented across multiple TraceIds: {string.Join(", ", distinctTraceIds)}");
+            else if (ctx.TraceSpans.Any(s => string.IsNullOrWhiteSpace(s.SpanId)) || ctx.TraceSpans.Select(s => s.SpanId).Distinct().Count() != ctx.TraceSpans.Count)
+                violations.Add("Trace contains an empty or duplicate span ID.");
             else
-                details.Add($"Unified TraceId: {distinctTraceIds[0]} across {ctx.TraceSpans.Count} distributed spans.");
+                details.Add($"All {ctx.TraceSpans.Count} supplied spans share TraceId {distinctTraceIds[0]}, with unique span IDs.");
         }
 
         return new GuaranteePillarResult
         {
             PillarName = "Distributed Trace Completeness",
             Passed = violations.Count == 0,
-            Summary = violations.Count == 0 ? "End-to-end distributed trace propagation intact." : "Distributed trace gap detected.",
+            Summary = violations.Count == 0 ? "The supplied spans share a trace ID; this does not verify unreported services." : "The supplied trace sample is inconsistent.",
             InvariantsEvaluated = invariants,
             AssertionsEvaluated = assertions,
             Details = details,

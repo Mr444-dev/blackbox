@@ -29,7 +29,7 @@ public class GuaranteeEngineTests
             Workflow = workflow,
             Resource = resource,
             OutboxMessageIds = new List<string> { "msg-1", "msg-2", "msg-3" },
-            InboxProcessedMessageIds = new List<string> { "inbox-101", "inbox-102" },
+            InboxMessageIds = new List<string> { "inbox-101", "inbox-102" },
             SideEffects = new List<SideEffectRecord>
             {
                 new("CARRIER_DISPATCH", "idem-carrier-1", DateTime.UtcNow, true, "{\"carrier\":\"DHL\"}"),
@@ -52,7 +52,14 @@ public class GuaranteeEngineTests
         report.OverallPassed.Should().BeTrue();
         report.TotalViolations.Should().Be(0);
         report.Pillars.Should().HaveCount(10);
-        report.Pillars.All(p => p.Passed).Should().BeTrue();
+        report.Pillars.Where(p => p.Evaluated).All(p => p.Passed).Should().BeTrue();
+        report.Pillars.Should().ContainSingle(p => p.PillarName == "API Contract")
+            .Which.Summary.Should().Contain("payload JSON syntax checks passed")
+            .And.NotContain("schema");
+        report.NotEvaluatedPillarCount.Should().Be(0);
+        report.TotalEventsPreserved.Should().Be(3);
+        report.TotalServicesInvolved.Should().Be(2);
+        report.TotalExternalDependencies.Should().Be(0);
         report.SignatureSummary.Should().StartWith("PASS:");
         report.SignatureSummary.Should().Contain("invariants");
         report.SignatureSummary.Should().Contain("0 violations");
@@ -90,7 +97,7 @@ public class GuaranteeEngineTests
     }
 
     [Fact]
-    public async Task VerifyWorkflowScenarioAsync_WhenSloExceeded_FlagsSloPillar()
+    public async Task VerifyWorkflowScenarioAsync_WhenScenarioDurationExceedsLimit_FlagsLatencyPillar()
     {
         // Arrange
         var workflow = WorkflowInstance.Create("corr-slo", "{\"orderId\":\"ord-slow\"}");
@@ -98,9 +105,9 @@ public class GuaranteeEngineTests
 
         var context = new WorkflowScenarioContext
         {
-            ScenarioName = "SlowProcessing_SloBreach",
+            ScenarioName = "SlowProcessing_LatencyLimit",
             Workflow = workflow,
-            ExecutionDurationMs = 3500.0 // Exceeds 2000ms P95 budget!
+            ExecutionDurationMs = 3500.0 // Exceeds the single-scenario 2000ms limit.
         };
 
         // Act
@@ -108,9 +115,26 @@ public class GuaranteeEngineTests
 
         // Assert
         report.OverallPassed.Should().BeFalse();
-        var sloPillar = report.Pillars.First(p => p.PillarName == "SLO Compliance");
-        sloPillar.Passed.Should().BeFalse();
-        sloPillar.Violations.Should().Contain(v => v.Contains("breached P95 SLO threshold"));
+        var latencyPillar = report.Pillars.First(p => p.PillarName == "Scenario Latency Budget");
+        latencyPillar.Passed.Should().BeFalse();
+        latencyPillar.Violations.Should().Contain(v => v.Contains("exceeded the configured limit"));
+    }
+
+    [Fact]
+    public async Task VerifyWorkflowScenarioAsync_WhenEvidenceIsMissing_MarksPillarsNotEvaluated()
+    {
+        var workflow = WorkflowInstance.Create("corr-no-evidence", "{}");
+        var report = await _engine.VerifyWorkflowScenarioAsync(new WorkflowScenarioContext
+        {
+            ScenarioName = "MissingEvidence",
+            Workflow = workflow,
+            ExecutionDurationMs = 100
+        });
+
+        report.OverallPassed.Should().BeTrue();
+        report.NotEvaluatedPillarCount.Should().BeGreaterThan(0);
+        report.Pillars.Should().Contain(p => !p.Evaluated && p.PillarName == "Distributed Trace Completeness");
+        report.SignatureSummary.Should().Contain("pillars evaluated");
     }
 
     [Fact]
@@ -133,8 +157,8 @@ public class GuaranteeEngineTests
 
         // Assert
         report.OverallPassed.Should().BeFalse();
-        var secPillar = report.Pillars.First(p => p.PillarName == "Security Rules");
+        var secPillar = report.Pillars.First(p => p.PillarName == "Security Scenario Checks");
         secPillar.Passed.Should().BeFalse();
-        secPillar.Violations.Should().Contain("Caller must be authenticated.");
+        secPillar.Violations.Should().Contain("Scenario input reports an unauthenticated caller.");
     }
 }

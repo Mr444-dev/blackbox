@@ -5,6 +5,7 @@ using Blackbox.Core.Outbox;
 using Blackbox.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 
 namespace Blackbox.Infrastructure.Services;
 
@@ -41,6 +42,7 @@ public class WorkflowOrchestrator : IWorkflowOrchestrator
 
         if (existing != null)
         {
+            EnsureIdempotencyPayloadMatches(existing, payloadJson);
             _logger.LogInformation("Idempotent hit: Workflow with correlationId {CorrelationId} already exists (Status: {Status}).", 
                 correlationId, existing.Status);
             return existing;
@@ -73,11 +75,42 @@ public class WorkflowOrchestrator : IWorkflowOrchestrator
                 workflow.Id, correlationId);
             return workflow;
         }
+        catch (DbUpdateException ex) when (
+            ex.InnerException is PostgresException
+            {
+                SqlState: PostgresErrorCodes.UniqueViolation
+            })
+        {
+            // Another request won the race after our initial idempotency read.
+            await transaction.RollbackAsync(ct);
+            _dbContext.ChangeTracker.Clear();
+            var winner = await _dbContext.Workflows
+                .AsNoTracking()
+                .FirstOrDefaultAsync(w => w.CorrelationId == correlationId, ct);
+            if (winner is not null)
+            {
+                EnsureIdempotencyPayloadMatches(winner, payloadJson);
+                _logger.LogInformation("Concurrent idempotent request resolved to workflow {WorkflowId} for {CorrelationId}.", winner.Id, correlationId);
+                return winner;
+            }
+
+            throw;
+        }
         catch (Exception ex)
         {
             await transaction.RollbackAsync(ct);
             _logger.LogError(ex, "Transaction rolled back during workflow start for correlationId {CorrelationId}.", correlationId);
             throw;
+        }
+    }
+
+    private static void EnsureIdempotencyPayloadMatches(WorkflowInstance workflow, string payloadJson)
+    {
+        if (!WorkflowPayloadComparer.AreEquivalent(workflow.PayloadJson, payloadJson))
+        {
+            throw new WorkflowInvariantException(
+                "IdempotencyKeyPayloadMismatch",
+                "The idempotency key has already been used with a different payload.");
         }
     }
 

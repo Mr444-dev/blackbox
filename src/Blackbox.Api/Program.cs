@@ -3,16 +3,43 @@ using Blackbox.Core.Observability;
 using Blackbox.Infrastructure.Persistence;
 using Blackbox.Infrastructure.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authorization;
+using Blackbox.Api.Security;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
+var configuredApiKey = builder.Configuration["Security:ApiKey"];
+if (string.IsNullOrWhiteSpace(configuredApiKey))
+    throw new InvalidOperationException("Security:ApiKey must be configured. Use a secret from the environment or secret store.");
+if (Encoding.UTF8.GetByteCount(configuredApiKey) < 32)
+    throw new InvalidOperationException("Security:ApiKey must contain at least 32 UTF-8 bytes. Generate a random key and provide it through a secret store.");
+
+builder.Services
+    .AddAuthentication("ApiKey")
+    .AddScheme<ApiKeyAuthenticationOptions, ApiKeyAuthenticationHandler>("ApiKey", options =>
+    {
+        options.ApiKey = configuredApiKey;
+    });
+builder.Services.AddAuthorization(options =>
+{
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+});
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 // Database & Services
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") 
-    ?? "Host=localhost;Port=5432;Database=blackbox_db;Username=blackbox_user;Password=blackbox_password";
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+if (string.IsNullOrWhiteSpace(connectionString))
+    throw new InvalidOperationException("ConnectionStrings:DefaultConnection must be configured.");
 
 builder.Services.AddDbContext<BlackboxDbContext>(options =>
     options.UseNpgsql(connectionString));
@@ -53,6 +80,18 @@ builder.Services.AddOpenTelemetry()
     });
 
 var app = builder.Build();
+const int maxWorkflowPayloadBytes = 256 * 1024;
+
+static bool ContainsNullCharacter(JsonElement element) => element.ValueKind switch
+{
+    JsonValueKind.String => element.GetString()?.Contains('\0') == true,
+    JsonValueKind.Object => element.EnumerateObject().Any(property => ContainsNullCharacter(property.Value)),
+    JsonValueKind.Array => element.EnumerateArray().Any(ContainsNullCharacter),
+    _ => false
+};
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 if (app.Environment.IsDevelopment())
 {
@@ -60,32 +99,39 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// Ensure database schema and seed data exist
+// A ready API must have a usable schema. Do not start healthy when database
+// initialization failed; the orchestrator should restart or surface the failure.
 using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<BlackboxDbContext>();
-    try
+    await dbContext.Database.EnsureCreatedAsync();
+    if (!await dbContext.Resources.AnyAsync())
     {
-        await dbContext.Database.EnsureCreatedAsync();
-        if (!await dbContext.Resources.AnyAsync())
-        {
-            await dbContext.Resources.AddRangeAsync(
-                new Blackbox.Core.Domain.Resource("SKU-LAPTOP-001", "High-End Laptop", 1),
-                new Blackbox.Core.Domain.Resource("SKU-PHONE-002", "Smartphone", 10),
-                new Blackbox.Core.Domain.Resource("SKU-DESK-003", "Standing Desk", 5)
-            );
-            await dbContext.SaveChangesAsync();
-        }
-    }
-    catch (Exception ex)
-    {
-        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-        logger.LogWarning(ex, "Could not auto-initialize PostgreSQL on startup. Please verify connection credentials.");
+        await dbContext.Resources.AddRangeAsync(
+            new Blackbox.Core.Domain.Resource("SKU-LAPTOP-001", "High-End Laptop", 1),
+            new Blackbox.Core.Domain.Resource("SKU-PHONE-002", "Smartphone", 10),
+            new Blackbox.Core.Domain.Resource("SKU-DESK-003", "Standing Desk", 5)
+        );
+        await dbContext.SaveChangesAsync();
     }
 }
 
 // Health Check
-app.MapGet("/health", () => Results.Ok(new { status = "Healthy", timestamp = DateTime.UtcNow }));
+app.MapGet("/health", () => Results.Ok(new { status = "Healthy", timestamp = DateTime.UtcNow }))
+    .AllowAnonymous();
+app.MapGet("/health/ready", async (BlackboxDbContext dbContext, CancellationToken ct) =>
+{
+    try
+    {
+        return await dbContext.Database.CanConnectAsync(ct)
+            ? Results.Ok(new { status = "Ready" })
+            : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
+    catch
+    {
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
+}).AllowAnonymous();
 
 // 1. Create / Trigger Workflow (with Idempotency Key)
 app.MapPost("/api/v1/workflows", async (
@@ -100,6 +146,26 @@ app.MapPost("/api/v1/workflows", async (
     if (string.IsNullOrWhiteSpace(correlationId))
     {
         return Results.BadRequest(new { error = "Either X-Idempotency-Key header or correlationId body field is required." });
+    }
+
+    if (correlationId.Length > 128)
+        return Results.BadRequest(new { error = "Correlation ID must not exceed 128 characters." });
+
+    if (string.IsNullOrWhiteSpace(request.PayloadJson))
+        return Results.BadRequest(new { error = "payloadJson is required." });
+
+    if (Encoding.UTF8.GetByteCount(request.PayloadJson) > maxWorkflowPayloadBytes)
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+
+    try
+    {
+        using var payloadDocument = JsonDocument.Parse(request.PayloadJson);
+        if (ContainsNullCharacter(payloadDocument.RootElement))
+            return Results.BadRequest(new { error = "payloadJson must not contain null characters." });
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest(new { error = "payloadJson must contain valid JSON." });
     }
 
     try
@@ -227,7 +293,7 @@ app.MapPost("/api/v1/workflows/{id:guid}/fail", async (
     }
 });
 
-// 6. Resilient Carrier Dispatch (with Fault Simulation & Circuit Breaker)
+// 6. Carrier dispatch through the local failure simulator and retry pipeline.
 app.MapPost("/api/v1/workflows/{id:guid}/dispatch", async (
     Guid id,
     [FromBody] DispatchCarrierRequest request,
@@ -293,33 +359,66 @@ app.MapPost("/api/v1/dlq/{id:guid}/replay", async (
     if (dlqItem == null)
         return Results.NotFound(new { error = $"DLQ record {id} not found." });
 
-    if (dlqItem.WorkflowId.HasValue)
+    if (dlqItem.Status != Blackbox.Core.Outbox.DeadLetterStatus.Quarantined)
+        return Results.Conflict(new { error = "Only quarantined DLQ records can be replayed." });
+
+    if (dlqItem.Source == "OutboxProcessor")
     {
-        // Execute replay in healthy mode
-        var replayResult = await carrierService.DispatchShipmentAsync(
-            dlqItem.WorkflowId.Value, 
-            "Replay Address", 
-            Blackbox.Infrastructure.External.CarrierSimulatorMode.Healthy);
+        return Results.Problem(
+            title: "Outbox replay is not implemented",
+            detail: "This record must be requeued through the Outbox after an operator review. It cannot be replayed through the carrier simulator.",
+            statusCode: StatusCodes.Status501NotImplemented);
+    }
 
-        if (replayResult.Success)
+    if (dlqItem.Source != "CarrierDispatch" || !dlqItem.WorkflowId.HasValue)
+        return Results.BadRequest(new { error = "This DLQ source has no supported replay handler." });
+
+    string destinationAddress;
+    try
+    {
+        using var payload = JsonDocument.Parse(dlqItem.Payload);
+        var root = payload.RootElement;
+        if (!root.TryGetProperty("workflowId", out var payloadWorkflowId)
+            || !payloadWorkflowId.TryGetGuid(out var parsedWorkflowId)
+            || parsedWorkflowId != dlqItem.WorkflowId.Value
+            || !root.TryGetProperty("destinationAddress", out var destination)
+            || string.IsNullOrWhiteSpace(destination.GetString()))
         {
-            dlqItem.MarkReplayed();
-            await dbContext.SaveChangesAsync();
-
-            return Results.Ok(new
-            {
-                status = "REPLAYED",
-                dlqId = dlqItem.Id,
-                trackingNumber = replayResult.TrackingNumber,
-                replayedAt = dlqItem.ReplayedAt
-            });
+            return Results.UnprocessableEntity(new { error = "DLQ payload is missing a valid workflow ID or destination address." });
         }
+
+        destinationAddress = destination.GetString()!;
+    }
+    catch (JsonException)
+    {
+        return Results.UnprocessableEntity(new { error = "DLQ payload is not valid JSON." });
+    }
+
+    // This demo retries carrier records in healthy simulator mode. It does not
+    // re-publish Outbox events or perform a real external carrier operation.
+    var replayResult = await carrierService.DispatchShipmentAsync(
+        dlqItem.WorkflowId.Value,
+        destinationAddress,
+        Blackbox.Infrastructure.External.CarrierSimulatorMode.Healthy);
+
+    if (replayResult.Success)
+    {
+        dlqItem.MarkReplayed();
+        await dbContext.SaveChangesAsync();
+
+        return Results.Ok(new
+        {
+            status = "REPLAYED",
+            dlqId = dlqItem.Id,
+            trackingNumber = replayResult.TrackingNumber,
+            replayedAt = dlqItem.ReplayedAt
+        });
     }
 
     return Results.BadRequest(new { error = "Unable to automatically replay non-workflow DLQ record." });
 });
 
-// 9. Distributed Saga: Multi-Step Execution with Automatic Compensating Transactions
+// 9. In-process saga simulation with compensating steps.
 app.MapPost("/api/v1/workflows/saga", async (
     [FromBody] RunSagaRequest request,
     [FromServices] IWorkflowOrchestrator orchestrator,
@@ -371,6 +470,11 @@ app.MapPost("/api/v1/workflows/saga", async (
     });
 });
 
+// In-memory and educational endpoints belong to the local demo profile only.
+// Keeping them out of Production prevents these prototypes from being mistaken
+// for durable, audited, or standardized implementations.
+if (app.Environment.IsDevelopment())
+{
 // 10. CRDT: Local Region Counter Delta Mutation (Increment / Decrement)
 app.MapPost("/api/v1/crdt/counters/{resourceId}/delta", (
     string resourceId,
@@ -489,7 +593,7 @@ app.MapPost("/api/v1/audit/verify", (
     return Results.Ok(new { valid = isValid, verifiedRoot = request.Proof.RootHash });
 });
 
-// 17. Merkle Audit Trail: Zero-Knowledge Statement Verification (Without Leaking Raw Payload)
+// 17. Merkle audit trail: verify a public claim against a Merkle inclusion proof.
 app.MapPost("/api/v1/audit/zk-verify", (
     [FromBody] ZkVerifyClaimRequest request) =>
 {
@@ -503,7 +607,8 @@ app.MapPost("/api/v1/audit/zk-verify", (
         valid = isValid,
         workflowId = request.Claim.WorkflowId,
         verifiedStateTransition = $"{request.Claim.FromState} -> {request.Claim.ToState}",
-        zeroKnowledgePayloadIntegrity = "Verified without disclosing raw confidential payload"
+        proofType = "Merkle inclusion proof",
+        payloadHandling = "The payload is omitted; its committed hash is included in the public claim. This is not a zero-knowledge proof."
     });
 });
 
@@ -557,14 +662,14 @@ app.MapPost("/api/v1/guarantee/verify/{id:guid}", async (
         Workflow = workflow,
         OutboxMessageIds = outboxMessages,
         ExecutionDurationMs = (workflow.UpdatedAt - workflow.CreatedAt).TotalMilliseconds,
-        SecurityAudit = new Blackbox.Core.Verification.SecurityAuditRecord("api_client", true, true, true, true)
+        SecurityAudit = new Blackbox.Core.Verification.SecurityAuditRecord("api-client", true, null, null, null)
     };
 
     var report = await guaranteeEngine.VerifyWorkflowScenarioAsync(context);
     return Results.Ok(report);
 });
 
-// 21. BLACKBOX GUARANTEE: Run Scenario & Output Formal Verification Scorecard
+// 21. Run a scenario and summarize the supplied verification evidence.
 app.MapPost("/api/v1/scenarios/run", async (
     [FromBody] RunScenarioApiRequest request,
     [FromServices] Blackbox.Core.Verification.IBlackboxGuaranteeEngine guaranteeEngine) =>
@@ -602,7 +707,7 @@ app.MapPost("/api/v1/scenarios/run", async (
     return Results.Ok(report);
 });
 
-// 22. AI Autonomous Remediation: Diagnose Incident Root Cause from OpenTelemetry Traces
+// 22. Apply deterministic incident-classification rules and recommend a response.
 app.MapPost("/api/v1/ai/diagnose", async (
     [FromBody] Blackbox.Core.Ai.IncidentTelemetryContext context,
     [FromServices] Blackbox.Core.Ai.IAutonomousRemediationAgent remediationAgent) =>
@@ -611,7 +716,7 @@ app.MapPost("/api/v1/ai/diagnose", async (
     return Results.Ok(recommendation);
 });
 
-// 23. AI Autonomous Remediation: Execute Recommended Policy (Saga Rollback, DLQ Quarantine, Jitter Backoff)
+// 23. Enforce approval guardrails; this prototype does not execute remediation commands.
 app.MapPost("/api/v1/ai/remediate", async (
     [FromBody] ExecuteRemediationApiRequest request,
     [FromServices] Blackbox.Core.Ai.IAutonomousRemediationAgent remediationAgent) =>
@@ -620,7 +725,7 @@ app.MapPost("/api/v1/ai/remediate", async (
     return Results.Ok(result);
 });
 
-// 24. Post-Quantum Cryptography: Generate NIST FIPS 204 ML-DSA Dilithium KeyPair
+// 24. Educational lattice-style signature demo (not a standardized cryptographic implementation).
 app.MapPost("/api/v1/crypto/pq/keys/dilithium", (
     [FromServices] Blackbox.Core.Cryptography.PostQuantum.PostQuantumDilithiumSigner signer) =>
 {
@@ -635,7 +740,7 @@ app.MapPost("/api/v1/crypto/pq/keys/dilithium", (
     });
 });
 
-// 25. Post-Quantum Cryptography: Seal Workflow Merkle Root with Dilithium Lattice Signature
+// 25. Seal workflow Merkle root with the educational signature demo.
 app.MapPost("/api/v1/crypto/pq/seal", (
     [FromBody] SealAuditRequest request,
     [FromServices] Blackbox.Core.Cryptography.PostQuantum.PostQuantumDilithiumSigner signer,
@@ -646,7 +751,7 @@ app.MapPost("/api/v1/crypto/pq/seal", (
     return Results.Ok(seal);
 });
 
-// 26. Post-Quantum Cryptography: Verify Quantum-Resistant Audit Seal
+// 26. Verify the educational audit seal.
 app.MapPost("/api/v1/crypto/pq/verify", (
     [FromBody] Blackbox.Core.Cryptography.PostQuantum.QuantumAuditSeal seal,
     [FromServices] Blackbox.Core.Cryptography.PostQuantum.IQuantumAuditSealer sealer) =>
@@ -662,7 +767,7 @@ app.MapPost("/api/v1/crypto/pq/verify", (
     });
 });
 
-// 27. Post-Quantum Cryptography: NIST FIPS 203 ML-KEM Kyber Lattice Key Encapsulation
+// 27. Educational lattice-style KEM demo (not a standardized cryptographic implementation).
 app.MapPost("/api/v1/crypto/pq/kyber/encapsulate", (
     [FromServices] Blackbox.Core.Cryptography.PostQuantum.PostQuantumKyberKEM kyber) =>
 {
@@ -679,6 +784,7 @@ app.MapPost("/api/v1/crypto/pq/kyber/encapsulate", (
         decapsulationMatched = matched
     });
 });
+}
 
 app.Run();
 

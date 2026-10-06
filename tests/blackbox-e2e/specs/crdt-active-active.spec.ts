@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Multi-Region Active-Active Replication with CRDTs', () => {
+test.describe('In-Memory CRDT Merge Examples', () => {
 
-  test('Regional writes and cross-region gossip merge should converge conflict-free', async ({ request }) => {
+  test('Two simulated replicas merge counter and register updates deterministically', async ({ request }) => {
     const resourceId = `CRDT-RES-${Date.now()}`;
 
     // 1. Region A (westeurope) performs local allocations (+50, -10)

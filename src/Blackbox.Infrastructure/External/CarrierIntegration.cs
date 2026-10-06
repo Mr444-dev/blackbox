@@ -14,7 +14,7 @@ namespace Blackbox.Infrastructure.External;
 public enum CarrierSimulatorMode
 {
     Healthy,
-    FailThreeTimesThenSucceed,
+    FailTwiceThenSucceed,
     AlwaysFail500,
     Timeout,
     RateLimited429
@@ -36,7 +36,6 @@ public interface ICarrierService
         CarrierSimulatorMode mode = CarrierSimulatorMode.Healthy, 
         CancellationToken ct = default);
 
-    CircuitState GetCircuitState();
 }
 
 public class ResilientCarrierService : ICarrierService
@@ -44,7 +43,6 @@ public class ResilientCarrierService : ICarrierService
     private readonly BlackboxDbContext _dbContext;
     private readonly ILogger<ResilientCarrierService> _logger;
     private readonly ResiliencePipeline _resiliencePipeline;
-    private readonly CircuitBreakerManualControl _circuitBreakerControl;
 
     public ResilientCarrierService(
         BlackboxDbContext dbContext,
@@ -52,9 +50,7 @@ public class ResilientCarrierService : ICarrierService
     {
         _dbContext = dbContext;
         _logger = logger;
-        _circuitBreakerControl = new CircuitBreakerManualControl();
-
-        // 1. Build Production-Grade Resilience Pipeline: Jittered Retry + Circuit Breaker
+        // Build a local retry and circuit-breaker example around simulated carrier outcomes.
         _resiliencePipeline = new ResiliencePipelineBuilder()
             .AddRetry(new RetryStrategyOptions
             {
@@ -77,22 +73,16 @@ public class ResilientCarrierService : ICarrierService
                 BreakDuration = TimeSpan.FromSeconds(5),
                 OnOpened = args =>
                 {
-                    _logger.LogError("CIRCUIT BREAKER OPENED! External Carrier is unreachable. Breaking for 5 seconds.");
+                    _logger.LogError("Carrier simulator circuit opened for 5 seconds after repeated failures.");
                     return ValueTask.CompletedTask;
                 },
                 OnClosed = args =>
                 {
-                    _logger.LogInformation("CIRCUIT BREAKER CLOSED. External Carrier is healthy again.");
+                    _logger.LogInformation("Carrier simulator circuit closed.");
                     return ValueTask.CompletedTask;
                 }
             })
             .Build();
-    }
-
-    public CircuitState GetCircuitState()
-    {
-        // Default to closed for standard inspection
-        return CircuitState.Closed;
     }
 
     public async Task<CarrierDispatchResult> DispatchShipmentAsync(
@@ -112,7 +102,7 @@ public class ResilientCarrierService : ICarrierService
             var trackingNumber = await _resiliencePipeline.ExecuteAsync(async token =>
             {
                 localAttempts++;
-                return await CallExternalCarrierApiAsync(workflowId, destinationAddress, mode, localAttempts, token);
+                return await SimulateCarrierApiAsync(workflowId, destinationAddress, mode, localAttempts, token);
             }, ct);
 
             // Upon successful dispatch, advance workflow state machine to WaitingCallback
@@ -168,7 +158,7 @@ public class ResilientCarrierService : ICarrierService
         }
     }
 
-    private async Task<string> CallExternalCarrierApiAsync(
+    private async Task<string> SimulateCarrierApiAsync(
         Guid workflowId, 
         string destination, 
         CarrierSimulatorMode mode, 
@@ -177,7 +167,7 @@ public class ResilientCarrierService : ICarrierService
     {
         switch (mode)
         {
-            case CarrierSimulatorMode.FailThreeTimesThenSucceed:
+            case CarrierSimulatorMode.FailTwiceThenSucceed:
                 if (attempt < 3)
                 {
                     throw new HttpRequestException($"Simulated 503 Service Unavailable (Attempt #{attempt})", null, HttpStatusCode.ServiceUnavailable);

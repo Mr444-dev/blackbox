@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('External Partner Resilience & Circuit Breaker', () => {
+test.describe('Carrier Failure Simulation and DLQ Replay', () => {
 
-  test('Carrier dispatch in Healthy mode returns 200 OK and tracking number', async ({ request }) => {
+  test('Healthy simulator mode returns a tracking number', async ({ request }) => {
     // 1. Create and reserve workflow
     const createResp = await request.post('/api/v1/workflows', {
       headers: { 'X-Idempotency-Key': `CB-HEALTHY-${Date.now()}` },
@@ -30,7 +30,7 @@ test.describe('External Partner Resilience & Circuit Breaker', () => {
     expect(body.status).toBe('WaitingCallback');
   });
 
-  test('Carrier dispatch with intermittent failures retries and succeeds via Polly', async ({ request }) => {
+  test('Two configured transient failures are retried before simulator success', async ({ request }) => {
     // 1. Create and reserve workflow
     const createResp = await request.post('/api/v1/workflows', {
       headers: { 'X-Idempotency-Key': `CB-RETRY-${Date.now()}` },
@@ -42,11 +42,11 @@ test.describe('External Partner Resilience & Circuit Breaker', () => {
       data: { resourceId: 'SKU-PHONE-002', quantity: 1 }
     });
 
-    // 2. Dispatch carrier with 3 intermittent failures
+    // 2. Dispatch through a mode that fails twice, then succeeds on attempt three.
     const dispatchResp = await request.post(`/api/v1/workflows/${workflow.id}/dispatch`, {
       data: {
         destinationAddress: 'Rynek Glowny 1, Krakow',
-        mode: 'FailThreeTimesThenSucceed'
+        mode: 'FailTwiceThenSucceed'
       }
     });
 
@@ -56,7 +56,7 @@ test.describe('External Partner Resilience & Circuit Breaker', () => {
     expect(body.attemptCount).toBe(3);
   });
 
-  test('Persistent failures trip Circuit Breaker, quarantine to DLQ, and allow Replay', async ({ request }) => {
+  test('Persistent simulated failures create a DLQ record that can be replayed in healthy mode', async ({ request }) => {
     // 1. Create and reserve workflow
     const createResp = await request.post('/api/v1/workflows', {
       headers: { 'X-Idempotency-Key': `CB-TRIP-${Date.now()}` },
@@ -68,13 +68,14 @@ test.describe('External Partner Resilience & Circuit Breaker', () => {
       data: { resourceId: 'SKU-PHONE-002', quantity: 1 }
     });
 
-    // 2. Dispatch carrier with AlwaysFail500
-    await request.post(`/api/v1/workflows/${workflow.id}/dispatch`, {
+    // 2. Dispatch through the deterministic failing simulator.
+    const dispatchResp = await request.post(`/api/v1/workflows/${workflow.id}/dispatch`, {
       data: {
         destinationAddress: 'Piotrkowska 50, Lodz',
         mode: 'AlwaysFail500'
       }
     });
+    expect([400, 503]).toContain(dispatchResp.status());
 
     // 3. Inspect DLQ
     const dlqResp = await request.get('/api/v1/dlq');

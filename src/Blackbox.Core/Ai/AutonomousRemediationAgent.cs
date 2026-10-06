@@ -19,11 +19,12 @@ public class AutonomousRemediationAgent : IAutonomousRemediationAgent
         var policy = new Dictionary<string, object>();
         var reasoning = new List<string>();
 
-        // 1. Diagnose based on OpenTelemetry Spans and Error Classification
+        // This demo classifier only uses supplied text and the longest supplied span.
+        // It does not ingest telemetry or verify incident facts on its own.
         if (context.ExceptionMessage.Contains("Payment", StringComparison.OrdinalIgnoreCase) ||
             context.FailedStep.Contains("Payment", StringComparison.OrdinalIgnoreCase))
         {
-            hypothesis = "Payment settlement rejected downstream by payment provider (e.g. CardDeclined / InsufficientFunds). Order pipeline partially committed.";
+            hypothesis = "Payment-related failure text was detected. The provider outcome and any earlier side effects have not been verified.";
             recommendedAction = RemediationActionType.RollbackSaga;
             confidence = 0.96;
             requiresHumanApproval = false;
@@ -33,13 +34,18 @@ public class AutonomousRemediationAgent : IAutonomousRemediationAgent
             policy["targetStatus"] = "COMPENSATED";
             policy["reason"] = "Compensating multi-party side effects in reverse topological DAG order";
 
-            reasoning.Add("Trace shows carrier booking succeeded, but payment span failed with settlement rejection.");
-            reasoning.Add("Standard Saga pattern dictates immediate reverse compensation to prevent inventory lock leakage.");
+            reasoning.Add("The supplied exception text or failed-step label matched the Payment keyword.");
+            reasoning.Add("Saga compensation is a proposed policy; no prior side effect or payment-provider response was inspected.");
         }
         else if (context.ExceptionMessage.Contains("Timeout", StringComparison.OrdinalIgnoreCase) ||
-                 (longestSpan != null && longestSpan.DurationMs > 3000))
+                 (longestSpan != null && double.IsFinite(longestSpan.DurationMs) && longestSpan.DurationMs > 3000))
         {
-            hypothesis = $"Downstream dependency '{longestSpan?.ServiceName ?? "External.Carrier"}' caused latency spike ({longestSpan?.DurationMs ?? 0}ms) exceeding circuit breaker threshold.";
+            var spanExceededThreshold = longestSpan is not null &&
+                double.IsFinite(longestSpan.DurationMs) &&
+                longestSpan.DurationMs > 3000;
+            hypothesis = spanExceededThreshold
+                ? $"The longest supplied span for '{longestSpan!.ServiceName}' exceeded the demonstration threshold of 3000 ms ({longestSpan!.DurationMs:F0} ms). This does not establish the root cause."
+                : "The supplied exception message matched the Timeout keyword. The cause and affected dependency have not been verified.";
             recommendedAction = RemediationActionType.DrainAndRetryWithJitter;
             confidence = 0.92;
             requiresHumanApproval = false;
@@ -50,14 +56,17 @@ public class AutonomousRemediationAgent : IAutonomousRemediationAgent
             policy["maxRetries"] = 3;
             policy["circuitAction"] = "HALF_OPEN_PROBE";
 
-            reasoning.Add($"Span '{longestSpan?.OperationName}' in service '{longestSpan?.ServiceName}' ran for {longestSpan?.DurationMs}ms.");
-            reasoning.Add("High confidence that transient network partition or carrier rate limiting caused timeout; backoff with jitter recommended.");
+            if (spanExceededThreshold)
+                reasoning.Add($"The longest supplied span was '{longestSpan!.OperationName}' in '{longestSpan!.ServiceName}' at {longestSpan!.DurationMs:F0} ms.");
+            else
+                reasoning.Add("The supplied exception message matched the Timeout keyword; no trace span established a cause.");
+            reasoning.Add("Jittered backoff is a proposal only; no retry was scheduled.");
         }
         else if (context.ExceptionMessage.Contains("Malformed", StringComparison.OrdinalIgnoreCase) ||
                  context.ExceptionMessage.Contains("Syntax", StringComparison.OrdinalIgnoreCase) ||
                  context.ExceptionMessage.Contains("Contract", StringComparison.OrdinalIgnoreCase))
         {
-            hypothesis = "Poison pill record detected: schema contract drift or corrupted JSON payload cannot be resolved via retries.";
+            hypothesis = "The supplied exception text matched a malformed, syntax, or contract keyword. Payload validation was not performed by this classifier.";
             recommendedAction = RemediationActionType.QuarantineToDlq;
             confidence = 0.98;
             requiresHumanApproval = false;
@@ -67,23 +76,24 @@ public class AutonomousRemediationAgent : IAutonomousRemediationAgent
             policy["suppressRetries"] = true;
             policy["alertLevel"] = "CRITICAL_SCHEMA_DRIFT";
 
-            reasoning.Add("Payload failed schema parsing/contract validation; retrying would induce a self-inflicted retry storm.");
-            reasoning.Add("Quarantined to DLQ for deterministic incident replay once producer pact is updated.");
+            reasoning.Add("The supplied exception text matched a malformed, syntax, or contract keyword.");
+            reasoning.Add("DLQ quarantine is a proposal only; no Kafka record was moved or replayed.");
         }
         else if (context.ExceptionMessage.Contains("Capacity", StringComparison.OrdinalIgnoreCase) ||
                  context.ExceptionMessage.Contains("Lock", StringComparison.OrdinalIgnoreCase))
         {
-            hypothesis = $"Severe inventory lock contention on resource '{context.ResourceId ?? "SKU-HOT"}'. High-frequency race condition detected.";
+            hypothesis = $"The supplied exception text matched a capacity or lock keyword. Resource '{context.ResourceId ?? "not supplied"}' state and lock ownership have not been inspected.";
             recommendedAction = RemediationActionType.ReleaseCapacity;
             confidence = 0.91;
             requiresHumanApproval = false;
 
             policy["strategy"] = "FORCE_UNLOCK_DANGLING_RESERVATION";
             policy["resourceId"] = context.ResourceId ?? "UNKNOWN";
-            policy["quantity"] = context.AllocatedQuantity ?? 1;
+            if (context.AllocatedQuantity is { } allocatedQuantity)
+                policy["quantity"] = allocatedQuantity;
 
-            reasoning.Add("Resource allocation failed or holds deadlocked lock while workflow cannot proceed.");
-            reasoning.Add("Releasing orphaned lock to unblock parallel transactions.");
+            reasoning.Add("The supplied exception text matched the Capacity or Lock keyword.");
+            reasoning.Add("No reservation or lock state was inspected; releasing capacity is a proposal only.");
         }
         else
         {
@@ -97,6 +107,8 @@ public class AutonomousRemediationAgent : IAutonomousRemediationAgent
 
             reasoning.Add("Anomaly does not match automated remediation taxonomy; escalating to human operator to protect data integrity.");
         }
+
+        reasoning.Add("ConfidenceScore is a fixed demonstration value, not a calibrated probability.");
 
         var recommendation = new RemediationRecommendation(
             IncidentId: context.IncidentId,
@@ -126,22 +138,13 @@ public class AutonomousRemediationAgent : IAutonomousRemediationAgent
                 ExecutionNotes: "Remediation held pending authorized SRE approval. Automated execution prevented by security guardrail."));
         }
 
-        string targetState = recommendation.RecommendedAction switch
-        {
-            RemediationActionType.RollbackSaga => "COMPENSATED",
-            RemediationActionType.QuarantineToDlq => "QUARANTINED",
-            RemediationActionType.DrainAndRetryWithJitter => "PROCESSING_RETRY",
-            RemediationActionType.ReleaseCapacity => "CAPACITY_RESTORED",
-            _ => "UNRESOLVED"
-        };
-
         var result = new RemediationExecutionResult(
             IncidentId: context.IncidentId,
             WorkflowId: context.WorkflowId,
             ActionExecuted: recommendation.RecommendedAction,
-            Success: true,
-            StateAfterRemediation: targetState,
-            ExecutionNotes: $"Successfully executed automated policy: {recommendation.RecommendedAction}. Workflow transitioned to {targetState}. Invariants preserved.");
+            Success: false,
+            StateAfterRemediation: "NOT_EXECUTED",
+            ExecutionNotes: "This prototype only classifies incidents and proposes a policy. It has no workflow, carrier, inventory, or DLQ command handler, so no remediation was executed.");
 
         return Task.FromResult(result);
     }

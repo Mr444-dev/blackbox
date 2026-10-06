@@ -35,4 +35,22 @@ test.describe('Idempotency & Deduplication Engine', () => {
     const uniqueIds = new Set(ids);
     expect(uniqueIds.size).toBe(1);
   });
+
+  test('Reusing an Idempotency-Key with a different payload returns 409', async ({ request }) => {
+    const idempotencyKey = `IDEM-PAYLOAD-${Date.now()}`;
+    const first = await request.post('/api/v1/workflows', {
+      headers: { 'X-Idempotency-Key': idempotencyKey },
+      data: { payloadJson: '{"amount":10}' }
+    });
+    expect(first.status()).toBe(200);
+
+    const conflicting = await request.post('/api/v1/workflows', {
+      headers: { 'X-Idempotency-Key': idempotencyKey },
+      data: { payloadJson: '{"amount":99}' }
+    });
+
+    expect(conflicting.status()).toBe(409);
+    const body = await conflicting.json();
+    expect(body.error).toContain('different payload');
+  });
 });
