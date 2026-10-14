@@ -2,6 +2,25 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Workflow Execution Lifecycle', () => {
 
+  test('Development Swagger UI is accessible and documents API key authentication', async ({ request }) => {
+    const anonymousHeaders = { 'X-API-Key': '' };
+    const uiResponse = await request.get('/swagger/index.html', { headers: anonymousHeaders });
+    expect(uiResponse.status()).toBe(200);
+    expect(await uiResponse.text()).toContain('swagger-ui');
+
+    const documentResponse = await request.get('/swagger/v1/swagger.json', { headers: anonymousHeaders });
+    expect(documentResponse.status()).toBe(200);
+    const document = await documentResponse.json();
+
+    expect(document.components.securitySchemes.ApiKey).toMatchObject({
+      type: 'apiKey',
+      name: 'X-API-Key',
+      in: 'header',
+    });
+    expect(document.paths['/api/v1/workflows'].post.security).toEqual([{ ApiKey: [] }]);
+    expect(document.paths['/health'].get.security).toBeUndefined();
+  });
+
   test('application endpoints reject an invalid API key', async ({ request }) => {
     const response = await request.get('/api/v1/workflows', {
       headers: { 'X-API-Key': 'invalid-test-key' }
