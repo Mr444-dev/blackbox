@@ -1,4 +1,5 @@
 # Blackbox
+![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white) ![Kafka](https://img.shields.io/badge/Kafka-231F20?logo=apachekafka&logoColor=white) ![MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
 ![Build](https://github.com/Mr444-dev/blackbox/actions/workflows/ci.yml/badge.svg?branch=main)
 
@@ -6,11 +7,55 @@
 
 **Stack:** C# · .NET 10 · ASP.NET Core · PostgreSQL · Kafka · Docker Compose · xUnit · Playwright
 
+[Run locally](#run-locally) · [Recorded demo](#recorded-demo) · [License](#license)
 ## Overview
 
 Blackbox explores order processing across an HTTP API, PostgreSQL, Kafka, a background worker, and an in-process carrier failure simulator. Its central engineering question is how to keep workflow state and event publication consistent across failures and retries. The carrier path does not call a real third-party API.
 
-This repository is an active portfolio prototype, not production software. The latest local audit passed the Release build, 71 unit tests, 6 PostgreSQL integration tests, and all 31 Playwright scenarios. The Compose E2E run confirmed 83 Outbox events published to Kafka and 83 Inbox receipts persisted; a follow-up workflow smoke request was also observed in both systems. See [Engineering Status](ENGINEERING_STATUS.md) for the exact checks and remaining limits.
+This repository is an active portfolio prototype, not production software. The latest local audit passed the Release build, 71 unit tests, 6 PostgreSQL integration tests, and all 32 Playwright scenarios on two fresh isolated databases. The Compose E2E run confirmed 83 Outbox events published to Kafka and 83 Inbox receipts persisted. See [Engineering Status](ENGINEERING_STATUS.md) for the exact checks and remaining limits.
+
+## Recorded demo
+
+[![Blackbox workflow lifecycle demo](docs/media/blackbox-workflow-demo.gif)](docs/media/blackbox-workflow-demo.webm)
+
+[Watch the full workflow demo (WebM)](docs/media/blackbox-workflow-demo.webm). The recording shows the Development Swagger UI creating a workflow, reading it back, reserving inventory, and completing it against the local API and PostgreSQL-backed stack. The API key is supplied to the recorder at runtime and is not included in the video.
+
+The walkthrough pauses before each important click, keeps a highlighted pointer visible, and briefly uses a pointer spotlight that can be toggled with two Ctrl taps. Red arrows and target rings identify the current control. Eight numbered screenshots are included below and regenerated alongside the video.
+
+Each recording run creates a new workflow and reserves one `SKU-DESK-003` unit in the local development database. The completed workflow and reservation remain stored, so use disposable demo data when re-recording. The API key is injected by the recorder and is never written into the screenshots or video.
+
+<details>
+<summary>View the walkthrough step by step</summary>
+
+| Step | Screenshot |
+| :--- | :--- |
+| 1. Open workflow creation | <img src="docs/media/blackbox-demo-steps/01-create-endpoint.png" alt="Step 1: open the workflow creation endpoint, highlighted with a red arrow" width="720"> |
+| 2. Enter a valid workflow request | <img src="docs/media/blackbox-demo-steps/02-create-request.png" alt="Step 2: enter the workflow request JSON, highlighted with a red arrow" width="720"> |
+| 3. Create the workflow | <img src="docs/media/blackbox-demo-steps/03-created-200.png" alt="Step 3: verify the created workflow response" width="720"> |
+| 4. Read back the persisted workflow | <img src="docs/media/blackbox-demo-steps/04-readback-200.png" alt="Step 4: read back the persisted workflow response" width="720"> |
+| 5. Prepare the inventory reservation | <img src="docs/media/blackbox-demo-steps/05-reserve-request.png" alt="Step 5: enter the inventory reservation request" width="720"> |
+| 6. Confirm the reservation | <img src="docs/media/blackbox-demo-steps/06-reservation-active.png" alt="Step 6: verify the active inventory reservation" width="720"> |
+| 7. Prepare workflow completion | <img src="docs/media/blackbox-demo-steps/07-complete-request.png" alt="Step 7: submit the workflow completion request" width="720"> |
+| 8. Confirm completion | <img src="docs/media/blackbox-demo-steps/08-completed-200.png" alt="Step 8: verify the completed workflow response" width="720"> |
+
+</details>
+
+To record it again, start the local stack, install the Playwright dependency, and run the script from the repository root. It reads `BLACKBOX_API_KEY` from the process environment or the Git-ignored `.env` file and requires the API readiness endpoint to pass. The script uses Brave when available at its default Windows path and otherwise uses Playwright-managed Chromium. The on-screen note explains why the key is absent from the visible request example.
+
+```powershell
+npm ci --prefix tests/blackbox-e2e
+node scripts/record-demo.mjs
+```
+
+The script writes the WebM recording, a PNG poster, and eight annotated PNG screenshots. The short animated GIF is an excerpt; refresh it after a new recording with the FFmpeg command below. Set `BLACKBOX_BRAVE_PATH` if Brave is installed somewhere other than its default Windows location.
+
+On a machine without Brave, install the Playwright browser once with `npm --prefix tests/blackbox-e2e exec -- playwright install chromium`.
+
+If you re-record the video, refresh the animated README preview with FFmpeg:
+
+```bash
+ffmpeg -y -ss 15 -i docs/media/blackbox-workflow-demo.webm -t 18 -vf "fps=3,scale=800:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=96[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" -loop 0 docs/media/blackbox-workflow-demo.gif
+```
 
 ## Why this project exists
 
@@ -25,6 +70,7 @@ Directly publishing a broker message after a database write creates a failure wi
 - **Bounded failure handling:** the Outbox retries publish failures and creates a DLQ record after five attempts.
 - **Explicit DLQ replay boundary:** only carrier simulator records can be replayed today. Kafka Outbox DLQ replay is not implemented and returns `501` instead of falsely reporting the event as replayed.
 - **API access:** application routes require `X-API-Key` with at least 32 UTF-8 bytes; liveness and database readiness endpoints are public.
+- **Development API docs:** Swagger UI is available without an API key in Development and exposes an `Authorize` control for protected routes; Swagger is disabled in Production.
 - **Verification scorecard:** checks scenario evidence provided to the engine. Missing inputs are marked not evaluated; it does not claim formal verification or production SLO measurements.
 - **Rule-based remediation prototype:** classifies example incidents and suggests actions. It does not execute the proposed remediation.
 - **Automated checks:** xUnit unit tests, PostgreSQL Testcontainers tests, and Playwright API scenarios.
@@ -83,7 +129,6 @@ The consumer records Kafka topic, partition, and offset to establish receipt bef
 ### Concurrent order creation
 
 Inventory reservation uses database locking, and a unique correlation identifier makes concurrent duplicate create requests converge. The PostgreSQL Testcontainers suite exercises five simultaneous duplicate-start requests and asserts that they produce one workflow and one Outbox record; it does not yet test concurrent inventory reservations.
-
 
 ## Design Decisions and Trade-offs
 
@@ -156,6 +201,22 @@ npx playwright install chromium
 npm test
 ```
 
+### Repeatable local E2E run on Windows
+
+The Playwright scenarios use shared seed inventory, so rerunning them against a database already changed by an earlier suite can produce misleading capacity failures. Use the isolated runner to create a fresh, uniquely named Compose project and disposable PostgreSQL volume for every run:
+
+```powershell
+.\scripts\verify-local.ps1
+```
+
+The runner preserves existing non-placeholder values in the Git-ignored `.env`, generates missing local secrets, waits for API readiness, and runs the complete Playwright suite. By default it removes only the temporary project and its volume after the run. To keep the stack available for a demo or failure investigation:
+
+```powershell
+.\scripts\verify-local.ps1 -KeepStack
+```
+
+The script prints the isolated Compose project name and a matching `docker compose -p ... down` command. That command stops containers without deleting the volume.
+
 GitHub Actions builds Release, runs the .NET tests, starts the full Compose stack, waits for readiness, runs Playwright, and checks that Outbox events reached Kafka and were recorded by the Inbox. Failures fail the workflow.
 
 ## Documentation
@@ -209,14 +270,4 @@ See [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md). The next reliability milesto
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
-
-## Links
-
-- **GitHub:** [Mr444-dev/blackbox](https://github.com/Mr444-dev/blackbox)
-- **Portfolio:** [mr444-dev.github.io](https://mr444-dev.github.io/)
-
-
-## Author
-
-**Michał Rusinek** · [GitHub](https://github.com/Mr444-dev) · [Portfolio](https://mr444-dev.github.io/)
+MIT. See [LICENSE](LICENSE). Third-party dependencies and assets remain under their respective licenses.
