@@ -1,9 +1,25 @@
 # Blackbox Engineering Status
 
-**Last reviewed:** 2026-10-06  
+**Last reviewed:** 2026-10-14
 **Status:** Portfolio prototype in active development. Not production ready.
 
-## Latest verification attempt
+## Latest verification — 2026-10-14
+
+Verified on the local Windows working tree with .NET SDK 10.0.401, Docker Desktop 29.2.0, and Node.js 24.12.0. The current verification includes a fix to the local runner so its readiness URL follows Docker Compose's process-environment port override.
+
+| Check | Result |
+|---|---|
+| `dotnet test Blackbox.slnx --configuration Release` with `BLACKBOX_TESTCONTAINERS=true` | 71 unit tests and 6 PostgreSQL integration tests passed; 0 failed or skipped. |
+| `scripts/verify-local.ps1 -KeepStack` | PostgreSQL and Kafka became healthy, API readiness returned `Ready`, and the worker started in a fresh Compose project. |
+| Playwright API suite (`npm test`) | 32 passed, 0 failed against that fresh isolated database. Includes Swagger API-key documentation, workflow lifecycle, concurrency, validation, retry, and prototype endpoint scenarios. |
+| `node scripts/record-demo.mjs` | Created a workflow, read it back, reserved one inventory unit, and completed it; every API response matched the expected state. Produced a 2:16 WebM and eight annotated screenshots. |
+| `npm ci --prefix tests/blackbox-e2e` | Completed; npm reported 0 known vulnerabilities in that test dependency tree. |
+
+An initial runner attempt exposed a port-precedence bug: Compose used the requested alternate port while the runner's readiness URL still targeted the already-running API on port 5000. That attempt reported 27 passes and 5 failures against the wrong, pre-existing instance. I did not reset or remove that existing stack; it may contain data from the attempted test run. The runner fix was followed by the successful 32/32 run against a separate fresh database.
+
+The `.env` contains development-only credentials and is ignored by Git; secret values are not recorded here. The fresh demo stack is still available on loopback at `http://127.0.0.1:55081`; its Compose project is `blackbox-e2e-9a96390d54`. Stop its containers without deleting its database with `docker compose -p blackbox-e2e-9a96390d54 down`.
+
+## Previous verification — 2026-10-06
 
 The source, documentation, workflow configuration, and local run instructions were reviewed on 2026-10-06. Results below separate checks that completed from checks blocked by this environment.
 

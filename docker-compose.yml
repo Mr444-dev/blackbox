@@ -1,7 +1,6 @@
 services:
   postgres:
     image: postgres:17-alpine
-    container_name: blackbox-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: blackbox_user
@@ -19,7 +18,6 @@ services:
 
   kafka:
     image: apache/kafka:3.8.0
-    container_name: blackbox-kafka
     restart: unless-stopped
     ports:
       - "127.0.0.1:${BLACKBOX_KAFKA_HOST_PORT:-29092}:29092"
@@ -45,7 +43,6 @@ services:
 
   kafka-init:
     image: apache/kafka:3.8.0
-    container_name: blackbox-kafka-init
     entrypoint: ["/bin/bash", "-ec"]
     command:
       - |
@@ -59,7 +56,6 @@ services:
     build:
       context: .
       dockerfile: src/Blackbox.Api/Dockerfile
-    container_name: blackbox-api
     restart: unless-stopped
     ports:
       - "127.0.0.1:${BLACKBOX_API_PORT:-5000}:8080"
@@ -84,7 +80,6 @@ services:
     build:
       context: .
       dockerfile: src/Blackbox.Worker/Dockerfile
-    container_name: blackbox-worker
     restart: unless-stopped
     environment:
       DOTNET_ENVIRONMENT: "Development"

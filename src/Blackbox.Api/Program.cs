@@ -6,7 +6,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authorization;
+using Blackbox.Api;
 using Blackbox.Api.Security;
+using Microsoft.OpenApi;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -57,7 +59,17 @@ builder.Services.AddSingleton<Blackbox.Core.Cryptography.PostQuantum.PostQuantum
 builder.Services.AddSingleton<Blackbox.Core.Cryptography.PostQuantum.IQuantumAuditSealer, Blackbox.Core.Cryptography.PostQuantum.QuantumResistantAuditSealer>();
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.AddSecurityDefinition(ApiKeyOperationFilter.SchemeName, new OpenApiSecurityScheme
+    {
+        Description = "Provide the local development API key in the X-API-Key header.",
+        Name = "X-API-Key",
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.ApiKey
+    });
+    options.OperationFilter<ApiKeyOperationFilter>();
+});
 
 // OpenTelemetry Distributed Tracing & Metrics
 builder.Services.AddOpenTelemetry()
@@ -90,14 +102,14 @@ static bool ContainsNullCharacter(JsonElement element) => element.ValueKind swit
     _ => false
 };
 
-app.UseAuthentication();
-app.UseAuthorization();
-
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 // A ready API must have a usable schema. Do not start healthy when database
 // initialization failed; the orchestrator should restart or surface the failure.
