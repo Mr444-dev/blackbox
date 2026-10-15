@@ -1,14 +1,12 @@
-using System.Text;
-using Blackbox.Core.Outbox;
-using Blackbox.Infrastructure.Persistence;
+using Blackbox.Infrastructure.Services;
 using Confluent.Kafka;
-using Microsoft.EntityFrameworkCore;
 
 namespace Blackbox.Worker;
 
 public sealed class KafkaInboxConsumer : BackgroundService
 {
-    private const string ConsumerName = "blackbox-inbox-v1";
+    // The v2 group uses logical domain EventIds rather than broker coordinates for deduplication.
+    private const string ConsumerName = "blackbox-inbox-v2";
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<KafkaInboxConsumer> _logger;
     private readonly string _bootstrapServers;
@@ -55,23 +53,26 @@ public sealed class KafkaInboxConsumer : BackgroundService
             if (record is null || record.IsPartitionEOF)
                 continue;
 
-            var messageId = $"{record.Topic}:{record.Partition.Value}:{record.Offset.Value}";
+            var transportMessageId = $"{record.Topic}:{record.Partition.Value}:{record.Offset.Value}";
+            var messageId = InboxMessageProcessor.ResolveMessageId(record.Message.Value, transportMessageId);
             try
             {
                 await using var scope = _scopeFactory.CreateAsyncScope();
-                var db = scope.ServiceProvider.GetRequiredService<BlackboxDbContext>();
-                var alreadyRecorded = await db.InboxMessages.AnyAsync(
-                    message => message.ConsumerName == ConsumerName && message.MessageId == messageId,
+                var processor = scope.ServiceProvider.GetRequiredService<IInboxMessageProcessor>();
+                var isNewMessage = await processor.RecordIfNewAsync(
+                    ConsumerName,
+                    messageId,
+                    record.Message.Value,
                     stoppingToken);
 
-                if (!alreadyRecorded)
+                if (!isNewMessage)
                 {
-                    await db.InboxMessages.AddAsync(
-                        InboxMessage.Create(ConsumerName, messageId, record.Message.Value),
-                        stoppingToken);
-                    await db.SaveChangesAsync(stoppingToken);
+                    _logger.LogInformation(
+                        "Skipping duplicate Kafka delivery for event {MessageId}; committing its offset.",
+                        messageId);
                 }
 
+                // Commit only after the durable receipt is inserted or the duplicate is confirmed.
                 consumer.Commit(record);
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
