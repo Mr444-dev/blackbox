@@ -120,8 +120,8 @@ After creating a workflow through the API and waiting for the worker to log `Rec
 
 ```bash
 event_json="$(docker compose exec -T postgres psql -U blackbox_user -d blackbox_db -Atc "SELECT payload::text FROM outbox_messages WHERE event_type = 'WorkflowCreated.v1' ORDER BY created_at DESC LIMIT 1")"
-printf '%s\\n' "$event_json"
-printf '%s\\n' "$event_json" | docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka:9092 --topic blackbox.workflow.events
+printf '%s\n' "$event_json"
+printf '%s\n' "$event_json" | docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka:9092 --topic blackbox.workflow.events
 ```
 
 The worker should log `Skipping duplicate Kafka delivery`. Replace `<EventId>` with the ID from the payload above and verify the stored receipt:
