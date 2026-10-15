@@ -1,13 +1,19 @@
-# Blackbox
-![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white) ![Kafka](https://img.shields.io/badge/Kafka-231F20?logo=apachekafka&logoColor=white) ![MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+<p align="center">
+  <img src="docs/assets/portfolio-mark.svg" alt="Blackbox logo" width="96" height="96">
+</p>
 
-![Build](https://github.com/Mr444-dev/blackbox/actions/workflows/ci.yml/badge.svg?branch=main)
+<h1 align="center">Blackbox</h1>
 
-> A .NET 10 distributed-order processing prototype built around PostgreSQL, Kafka, and a transactional outbox.
+<p align="center"><strong>.NET 10 distributed-order processing with PostgreSQL, Kafka, and a transactional outbox.</strong></p>
+
+<p align="center"><img src="https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&amp;logoColor=white" alt=".NET 10"> <img src="https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&amp;logoColor=white" alt="PostgreSQL"> <img src="https://img.shields.io/badge/Kafka-231F20?logo=apachekafka&amp;logoColor=white" alt="Kafka"> <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT"></p>
+
+<p align="center"><img src="https://github.com/Mr444-dev/blackbox/actions/workflows/ci.yml/badge.svg?branch=main" alt="Build"></p>
 
 **Stack:** C# · .NET 10 · ASP.NET Core · PostgreSQL · Kafka · Docker Compose · xUnit · Playwright
 
-[Run locally](#run-locally) · [Recorded demo](#recorded-demo) · [License](#license)
+<p align="center"><a href="#run-locally">Run locally</a> &nbsp;·&nbsp; <a href="#recorded-demo">Recorded demo</a> &nbsp;·&nbsp; <a href="#license">License</a></p>
+
 ## Overview
 
 Blackbox explores order processing across an HTTP API, PostgreSQL, Kafka, a background worker, and an in-process carrier failure simulator. Its central engineering question is how to keep workflow state and event publication consistent across failures and retries. The carrier path does not call a real third-party API.
@@ -16,7 +22,7 @@ This repository is an active portfolio prototype, not production software. The l
 
 ## Recorded demo
 
-[![Blackbox workflow lifecycle demo](docs/media/blackbox-workflow-demo.gif)](docs/media/blackbox-workflow-demo.webm)
+<p align="center"><a href="docs/media/blackbox-workflow-demo.webm"><img src="docs/media/blackbox-workflow-demo.gif" alt="Blackbox workflow lifecycle demo"></a></p>
 
 [Watch the full workflow demo (WebM)](docs/media/blackbox-workflow-demo.webm). The recording shows the Development Swagger UI creating a workflow, reading it back, reserving inventory, and completing it against the local API and PostgreSQL-backed stack. The API key is supplied to the recorder at runtime and is not included in the video.
 
