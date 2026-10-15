@@ -65,7 +65,11 @@ public sealed class KafkaInboxConsumer : BackgroundService
                     record.Message.Value,
                     stoppingToken);
 
-                if (!isNewMessage)
+                if (isNewMessage)
+                {
+                    _logger.LogInformation("Recorded Kafka event {MessageId}.", messageId);
+                }
+                else
                 {
                     _logger.LogInformation(
                         "Skipping duplicate Kafka delivery for event {MessageId}; committing its offset.",
