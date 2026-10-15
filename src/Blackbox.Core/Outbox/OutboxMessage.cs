@@ -106,6 +106,8 @@ public class DeadLetterMessage
 {
     public Guid Id { get; private set; }
     public Guid? WorkflowId { get; private set; }
+    public string? TransportMessageId { get; private set; }
+    public string? DeduplicationKey { get; private set; }
     public string Source { get; private set; }
     public string Payload { get; private set; }
     public string ExceptionMessage { get; private set; }
@@ -121,12 +123,21 @@ public class DeadLetterMessage
         ExceptionMessage = string.Empty;
     }
 
-    public static DeadLetterMessage Create(Guid? workflowId, string source, string payload, string exceptionMessage, string? stackTrace = null)
+    public static DeadLetterMessage Create(
+        Guid? workflowId,
+        string source,
+        string payload,
+        string exceptionMessage,
+        string? stackTrace = null,
+        string? deduplicationKey = null,
+        string? transportMessageId = null)
     {
         return new DeadLetterMessage
         {
             Id = Guid.NewGuid(),
             WorkflowId = workflowId,
+            TransportMessageId = transportMessageId,
+            DeduplicationKey = deduplicationKey,
             Source = source,
             Payload = payload,
             ExceptionMessage = exceptionMessage,

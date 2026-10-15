@@ -12,6 +12,7 @@ public class BlackboxDbContext : DbContext
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<InboxMessage> InboxMessages => Set<InboxMessage>();
     public DbSet<DeadLetterMessage> DeadLetterMessages => Set<DeadLetterMessage>();
+    public DbSet<WorkflowEventProjection> WorkflowEventProjections => Set<WorkflowEventProjection>();
 
     public BlackboxDbContext(DbContextOptions<BlackboxDbContext> options) : base(options)
     {
@@ -105,6 +106,8 @@ public class BlackboxDbContext : DbContext
             entity.HasKey(d => d.Id);
             entity.Property(d => d.Id).HasColumnName("id");
             entity.Property(d => d.WorkflowId).HasColumnName("workflow_id");
+            entity.Property(d => d.TransportMessageId).HasColumnName("transport_message_id").HasMaxLength(128);
+            entity.Property(d => d.DeduplicationKey).HasColumnName("deduplication_key").HasMaxLength(128);
             entity.Property(d => d.Source).HasColumnName("source").HasMaxLength(64).IsRequired();
             entity.Property(d => d.Payload).HasColumnType("jsonb").HasColumnName("payload").IsRequired();
             entity.Property(d => d.ExceptionMessage).HasColumnName("exception_message").IsRequired();
@@ -112,6 +115,22 @@ public class BlackboxDbContext : DbContext
             entity.Property(d => d.Status).HasColumnName("status").HasConversion<string>().HasMaxLength(32).IsRequired();
             entity.Property(d => d.CreatedAt).HasColumnName("created_at").IsRequired();
             entity.Property(d => d.ReplayedAt).HasColumnName("replayed_at");
+            entity.HasIndex(d => d.DeduplicationKey)
+                .IsUnique()
+                .HasFilter("deduplication_key IS NOT NULL");
+        });
+
+        modelBuilder.Entity<WorkflowEventProjection>(entity =>
+        {
+            entity.ToTable("workflow_event_projections");
+            entity.HasKey(projection => projection.WorkflowId);
+            entity.Property(projection => projection.WorkflowId).HasColumnName("workflow_id");
+            entity.Property(projection => projection.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
+            entity.Property(projection => projection.EventCount).HasColumnName("event_count").IsRequired();
+            entity.Property(projection => projection.LastEventId).HasColumnName("last_event_id").IsRequired();
+            entity.Property(projection => projection.LastEventType).HasColumnName("last_event_type").HasMaxLength(64).IsRequired();
+            entity.Property(projection => projection.LastOccurredAtUtc).HasColumnName("last_occurred_at_utc").IsRequired();
+            entity.Property(projection => projection.UpdatedAtUtc).HasColumnName("updated_at_utc").IsRequired();
         });
     }
 }

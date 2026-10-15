@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 using Blackbox.Core.Domain;
 using Blackbox.Core.Domain.Events;
 using Blackbox.Core.Outbox;
@@ -186,20 +187,25 @@ public class TransactionalOutboxTests : IClassFixture<PostgreSqlFixture>
         await using (var firstContext = _fixture.CreateDbContext())
         {
             var firstDelivery = await new InboxMessageProcessor(firstContext)
-                .RecordIfNewAsync(consumerName, firstDeliveryId, payload);
-            firstDelivery.Should().BeTrue();
+                .ProcessAsync(consumerName, "blackbox.workflow.events:0:10", payload);
+            firstDelivery.Should().Be(InboxProcessingResult.Processed);
         }
 
         await using (var restartedContext = _fixture.CreateDbContext())
         {
             var replayedDelivery = await new InboxMessageProcessor(restartedContext)
-                .RecordIfNewAsync(consumerName, redeliveryId, payload);
-            replayedDelivery.Should().BeFalse();
+                .ProcessAsync(consumerName, "blackbox.workflow.events:0:11", payload);
+            replayedDelivery.Should().Be(InboxProcessingResult.Duplicate);
 
             var receiptCount = await restartedContext.InboxMessages.CountAsync(message =>
                 message.ConsumerName == consumerName &&
                 message.MessageId == eventId.ToString("D"));
             receiptCount.Should().Be(1);
+
+            var projection = await restartedContext.WorkflowEventProjections.SingleAsync(item => item.WorkflowId == domainEvent.WorkflowId);
+            projection.EventCount.Should().Be(1);
+            projection.LastEventId.Should().Be(eventId);
+            projection.LastEventType.Should().Be(domainEvent.EventType);
         }
     }
 
@@ -218,25 +224,179 @@ public class TransactionalOutboxTests : IClassFixture<PostgreSqlFixture>
         var payload = JsonSerializer.Serialize(domainEvent);
         const string consumerName = "integration-test-concurrent-inbox";
 
-        async Task<bool> DeliverAsync(string transportMessageId)
+        async Task<InboxProcessingResult> DeliverAsync(string transportMessageId)
         {
             await using var context = _fixture.CreateDbContext();
-            var messageId = InboxMessageProcessor.ResolveMessageId(payload, transportMessageId);
             return await new InboxMessageProcessor(context)
-                .RecordIfNewAsync(consumerName, messageId, payload);
+                .ProcessAsync(consumerName, transportMessageId, payload);
         }
 
         var results = await Task.WhenAll(
             DeliverAsync("blackbox.workflow.events:0:20"),
             DeliverAsync("blackbox.workflow.events:1:31"));
 
-        results.Count(inserted => inserted).Should().Be(1);
+        results.Count(result => result == InboxProcessingResult.Processed).Should().Be(1);
+        results.Count(result => result == InboxProcessingResult.Duplicate).Should().Be(1);
 
         await using var verificationContext = _fixture.CreateDbContext();
         var receiptCount = await verificationContext.InboxMessages.CountAsync(message =>
             message.ConsumerName == consumerName &&
             message.MessageId == eventId.ToString("D"));
         receiptCount.Should().Be(1);
+
+        var projection = await verificationContext.WorkflowEventProjections.SingleAsync(item => item.WorkflowId == domainEvent.WorkflowId);
+        projection.EventCount.Should().Be(1);
+    }
+
+    [DockerFact]
+    public async Task InboxProcessor_OutOfOrderEvents_CountBothButKeepTheNewestProjection()
+    {
+        var workflowId = Guid.NewGuid();
+        var correlationId = $"INBOX-ORDER-{Guid.NewGuid():N}";
+        var now = DateTime.UtcNow;
+        var newerEvent = new WorkflowValidatedEvent(workflowId, correlationId)
+        {
+            EventId = Guid.NewGuid(),
+            OccurredOnUtc = now
+        };
+        var olderEvent = new WorkflowCreatedEvent(workflowId, correlationId, "{}")
+        {
+            EventId = Guid.NewGuid(),
+            OccurredOnUtc = now.AddMinutes(-1)
+        };
+        const string consumerName = "integration-test-inbox-order";
+
+        await using (var context = _fixture.CreateDbContext())
+        {
+            (await new InboxMessageProcessor(context).ProcessAsync(
+                consumerName, "blackbox.workflow.events:0:71", JsonSerializer.Serialize(newerEvent)))
+                .Should().Be(InboxProcessingResult.Processed);
+        }
+
+        await using (var context = _fixture.CreateDbContext())
+        {
+            (await new InboxMessageProcessor(context).ProcessAsync(
+                consumerName, "blackbox.workflow.events:0:70", JsonSerializer.Serialize(olderEvent)))
+                .Should().Be(InboxProcessingResult.Processed);
+        }
+
+        await using var verificationContext = _fixture.CreateDbContext();
+        var projection = await verificationContext.WorkflowEventProjections.SingleAsync(item => item.WorkflowId == workflowId);
+        projection.EventCount.Should().Be(2);
+        projection.LastEventId.Should().Be(newerEvent.EventId);
+        projection.LastEventType.Should().Be(newerEvent.EventType);
+    }
+
+    [DockerFact]
+    public async Task InboxProcessor_SameEventIdWithDifferentPayload_IsQuarantinedWithoutRepeatingTheEffect()
+    {
+        var eventId = Guid.NewGuid();
+        var workflowId = Guid.NewGuid();
+        var originalEvent = new WorkflowCreatedEvent(workflowId, $"INBOX-CONFLICT-{Guid.NewGuid():N}", "{\"orderId\":\"original\"}")
+        {
+            EventId = eventId
+        };
+        var conflictingEvent = originalEvent with { PayloadJson = "{\"orderId\":\"tampered\"}" };
+        var originalPayload = JsonSerializer.Serialize(originalEvent);
+        var conflictingPayload = JsonSerializer.Serialize(conflictingEvent);
+        var consumerName = $"integration-conflict-{Guid.NewGuid():N}";
+
+        await using (var context = _fixture.CreateDbContext())
+        {
+            var result = await new InboxMessageProcessor(context).ProcessAsync(
+                consumerName, "blackbox.workflow.events:0:41", originalPayload);
+            result.Should().Be(InboxProcessingResult.Processed);
+        }
+
+        await using (var context = _fixture.CreateDbContext())
+        {
+            var processor = new InboxMessageProcessor(context);
+            (await processor.ProcessAsync(consumerName, "blackbox.workflow.events:0:42", conflictingPayload))
+                .Should().Be(InboxProcessingResult.Quarantined);
+            (await processor.ProcessAsync(consumerName, "blackbox.workflow.events:0:43", conflictingPayload))
+                .Should().Be(InboxProcessingResult.Quarantined);
+        }
+
+        await using var verificationContext = _fixture.CreateDbContext();
+        (await verificationContext.InboxMessages.CountAsync(message =>
+            message.ConsumerName == consumerName && message.MessageId == eventId.ToString("D")))
+            .Should().Be(1);
+        var conflictDeadLetters = await verificationContext.DeadLetterMessages.Where(message =>
+            message.Source == "InboxEventConflict" && message.DeduplicationKey == $"inbox-event-conflict:{consumerName}:{eventId:D}")
+            .ToListAsync();
+        conflictDeadLetters.Should().ContainSingle();
+        var conflictDeadLetter = conflictDeadLetters.Single();
+        conflictDeadLetter.TransportMessageId.Should().Be("blackbox.workflow.events:0:42");
+        (await verificationContext.WorkflowEventProjections.SingleAsync(item => item.WorkflowId == workflowId))
+            .EventCount.Should().Be(1);
+    }
+
+    [DockerFact]
+    public async Task InboxProcessor_InvalidJson_IsQuarantinedAndCanBeCommitted()
+    {
+        const string malformedPayload = "{not-json";
+        const string transportMessageId = "blackbox.workflow.events:0:51";
+        var consumerName = $"integration-poison-{Guid.NewGuid():N}";
+
+        await using (var context = _fixture.CreateDbContext())
+        {
+            var result = await new InboxMessageProcessor(context).ProcessAsync(
+                consumerName, transportMessageId, malformedPayload);
+            result.Should().Be(InboxProcessingResult.Quarantined);
+        }
+
+        await using (var context = _fixture.CreateDbContext())
+        {
+            var retry = await new InboxMessageProcessor(context).ProcessAsync(
+                consumerName, transportMessageId, malformedPayload);
+            retry.Should().Be(InboxProcessingResult.Quarantined);
+        }
+
+        const string secondTransportMessageId = "blackbox.workflow.events:0:52";
+        await using (var context = _fixture.CreateDbContext())
+        {
+            var distinctRecord = await new InboxMessageProcessor(context).ProcessAsync(
+                consumerName, secondTransportMessageId, malformedPayload);
+            distinctRecord.Should().Be(InboxProcessingResult.Quarantined);
+        }
+
+        await using var verificationContext = _fixture.CreateDbContext();
+        (await verificationContext.InboxMessages.CountAsync(message => message.ConsumerName == consumerName)).Should().Be(0);
+
+        var deadLetters = await verificationContext.DeadLetterMessages
+            .Where(message => message.Source == "InboxInvalidJson" && message.DeduplicationKey != null)
+            .OrderBy(message => message.TransportMessageId)
+            .ToListAsync();
+        deadLetters.Should().HaveCount(2);
+        deadLetters.Select(message => message.TransportMessageId)
+            .Should().BeEquivalentTo([transportMessageId, secondTransportMessageId]);
+        var deadLetter = deadLetters[0];
+        using var payload = JsonDocument.Parse(deadLetter.Payload);
+        var rawPayloadBase64 = payload.RootElement.GetProperty("rawPayloadBase64").GetString();
+        Encoding.UTF8.GetString(Convert.FromBase64String(rawPayloadBase64!)).Should().Be(malformedPayload);
+    }
+
+    [DockerFact]
+    public async Task InboxProcessor_DuplicateJsonProperties_AreQuarantinedWithRawPayloadAndTransportId()
+    {
+        var eventId = Guid.NewGuid();
+        var transportMessageId = "blackbox.workflow.events:0:61";
+        var payload = $"{{\"EventId\":\"{eventId:D}\",\"EventId\":\"{Guid.NewGuid():D}\",\"WorkflowId\":\"{Guid.NewGuid():D}\",\"EventType\":\"WorkflowCreated.v1\",\"OccurredOnUtc\":\"2026-10-15T00:00:00Z\"}}";
+        var consumerName = $"integration-ambiguous-{Guid.NewGuid():N}";
+
+        await using (var context = _fixture.CreateDbContext())
+        {
+            var result = await new InboxMessageProcessor(context).ProcessAsync(consumerName, transportMessageId, payload);
+            result.Should().Be(InboxProcessingResult.Quarantined);
+        }
+
+        await using var verificationContext = _fixture.CreateDbContext();
+        (await verificationContext.InboxMessages.CountAsync(message => message.ConsumerName == consumerName)).Should().Be(0);
+        var deadLetter = await verificationContext.DeadLetterMessages.SingleAsync(message =>
+            message.Source == "InboxAmbiguousJson" && message.TransportMessageId == transportMessageId);
+        using var storedPayload = JsonDocument.Parse(deadLetter.Payload);
+        var rawPayloadBase64 = storedPayload.RootElement.GetProperty("rawPayloadBase64").GetString();
+        Encoding.UTF8.GetString(Convert.FromBase64String(rawPayloadBase64!)).Should().Be(payload);
     }
 
     [DockerFact]

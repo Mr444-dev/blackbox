@@ -54,29 +54,42 @@ public sealed class KafkaInboxConsumer : BackgroundService
                 continue;
 
             var transportMessageId = $"{record.Topic}:{record.Partition.Value}:{record.Offset.Value}";
-            var messageId = InboxMessageProcessor.ResolveMessageId(record.Message.Value, transportMessageId);
+            var payload = record.Message.Value ?? string.Empty;
+            var messageId = InboxMessageProcessor.ResolveMessageId(payload, transportMessageId);
             try
             {
                 await using var scope = _scopeFactory.CreateAsyncScope();
                 var processor = scope.ServiceProvider.GetRequiredService<IInboxMessageProcessor>();
-                var isNewMessage = await processor.RecordIfNewAsync(
+                var result = await processor.ProcessAsync(
                     ConsumerName,
-                    messageId,
-                    record.Message.Value,
+                    transportMessageId,
+                    payload,
                     stoppingToken);
 
-                if (isNewMessage)
+                if (result == InboxProcessingResult.Processed)
                 {
-                    _logger.LogInformation("Recorded Kafka event {MessageId}.", messageId);
+                    _logger.LogInformation("Processed Kafka event {MessageId} into the workflow event projection.", messageId);
                 }
-                else
+                else if (result == InboxProcessingResult.ReceiptRecorded)
+                {
+                    _logger.LogInformation(
+                        "Recorded Kafka receipt {MessageId}; no EventId was present for workflow projection.",
+                        messageId);
+                }
+                else if (result == InboxProcessingResult.Duplicate)
                 {
                     _logger.LogInformation(
                         "Skipping duplicate Kafka delivery for event {MessageId}; committing its offset.",
                         messageId);
                 }
+                else
+                {
+                    _logger.LogWarning(
+                        "Quarantined Kafka message {MessageId}; committing its offset after durable quarantine.",
+                        messageId);
+                }
 
-                // Commit only after the durable receipt is inserted or the duplicate is confirmed.
+                // Commit only after the projection, duplicate check, or quarantine has committed in PostgreSQL.
                 consumer.Commit(record);
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)

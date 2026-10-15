@@ -82,11 +82,10 @@ jobs:
         shell: bash
         run: |
           for attempt in $(seq 1 30); do
-            counts=$(docker compose exec -T postgres psql -U blackbox_user -d blackbox_db -Atc "SELECT (SELECT COUNT(*) FROM outbox_messages WHERE status = 'Published'), (SELECT COUNT(*) FROM inbox_messages);")
-            published=${counts%%|*}
-            inbox=${counts##*|}
-            if [[ "$published" =~ ^[0-9]+$ && "$inbox" =~ ^[0-9]+$ ]] && (( published > 0 && inbox > 0 )); then
-              echo "Kafka delivery verified: published=$published inbox=$inbox"
+            counts=$(docker compose exec -T postgres psql -U blackbox_user -d blackbox_db -Atc "SELECT (SELECT COUNT(*) FROM outbox_messages WHERE status = 'Published'), (SELECT COUNT(*) FROM inbox_messages), (SELECT COUNT(*) FROM workflow_event_projections);")
+            IFS='|' read -r published inbox projections <<< "$counts"
+            if [[ "$published" =~ ^[0-9]+$ && "$inbox" =~ ^[0-9]+$ && "$projections" =~ ^[0-9]+$ ]] && (( published > 0 && inbox > 0 && projections > 0 )); then
+              echo "Kafka delivery verified: published=$published inbox=$inbox projections=$projections"
               exit 0
             fi
             sleep 1
