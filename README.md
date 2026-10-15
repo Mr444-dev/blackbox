@@ -18,7 +18,7 @@
 
 Blackbox explores order processing across an HTTP API, PostgreSQL, Kafka, a background worker, and an in-process carrier failure simulator. Its central engineering question is how to keep workflow state and event publication consistent across failures and retries. The carrier path does not call a real third-party API.
 
-This repository is an active portfolio prototype, not production software. The latest local audit passed the Release build, 71 unit tests, 6 PostgreSQL integration tests, and all 32 Playwright scenarios on two fresh isolated databases. The Compose E2E run confirmed 83 Outbox events published to Kafka and 83 Inbox receipts persisted. See [Engineering Status](ENGINEERING_STATUS.md) for the exact checks and remaining limits.
+This repository is an active portfolio prototype, not production software. The last verified local audit was run before the current Inbox redelivery change: it passed the Release build, 71 unit tests, 6 PostgreSQL integration tests, and all 32 Playwright scenarios on two fresh isolated databases. That Compose E2E run confirmed 83 Outbox events published to Kafka and 83 Inbox receipts persisted. This branch adds two PostgreSQL redelivery tests; they are not verified yet. See [Engineering Status](ENGINEERING_STATUS.md) for the recorded audit and remaining limits.
 
 ## Recorded demo
 
