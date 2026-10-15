@@ -21,6 +21,7 @@ builder.Services.AddSingleton<IProducer<string, string>>(_ => new ProducerBuilde
     new ProducerConfig { BootstrapServers = kafkaBootstrapServers }).Build());
 builder.Services.AddSingleton<IEventPublisher, KafkaEventPublisher>();
 builder.Services.AddScoped<IOutboxProcessor, OutboxProcessor>();
+builder.Services.AddScoped<IInboxMessageProcessor, InboxMessageProcessor>();
 
 builder.Services.AddHostedService<OutboxWorker>();
 builder.Services.AddHostedService<KafkaInboxConsumer>();
