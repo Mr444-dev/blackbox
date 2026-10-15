@@ -203,6 +203,42 @@ public class TransactionalOutboxTests : IClassFixture<PostgreSqlFixture>
         }
     }
 
+
+    [DockerFact]
+    public async Task InboxProcessor_ConcurrentDeliveriesOfSameEvent_ShouldInsertOnlyOneReceipt()
+    {
+        var eventId = Guid.NewGuid();
+        var domainEvent = new WorkflowCreatedEvent(
+            Guid.NewGuid(),
+            $"INBOX-CONCURRENT-{Guid.NewGuid():N}",
+            "{\"orderId\":\"concurrent-redelivery-test\"}")
+        {
+            EventId = eventId
+        };
+        var payload = JsonSerializer.Serialize(domainEvent);
+        const string consumerName = "integration-test-concurrent-inbox";
+
+        async Task<bool> DeliverAsync(string transportMessageId)
+        {
+            await using var context = _fixture.CreateDbContext();
+            var messageId = InboxMessageProcessor.ResolveMessageId(payload, transportMessageId);
+            return await new InboxMessageProcessor(context)
+                .RecordIfNewAsync(consumerName, messageId, payload);
+        }
+
+        var results = await Task.WhenAll(
+            DeliverAsync("blackbox.workflow.events:0:20"),
+            DeliverAsync("blackbox.workflow.events:1:31"));
+
+        results.Count(inserted => inserted).Should().Be(1);
+
+        await using var verificationContext = _fixture.CreateDbContext();
+        var receiptCount = await verificationContext.InboxMessages.CountAsync(message =>
+            message.ConsumerName == consumerName &&
+            message.MessageId == eventId.ToString("D"));
+        receiptCount.Should().Be(1);
+    }
+
     [DockerFact]
     public async Task ReserveResource_WithPessimisticLock_ShouldEnforceCapacityInvariant()
     {
