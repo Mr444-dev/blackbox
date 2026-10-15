@@ -1,9 +1,24 @@
 # Blackbox Engineering Status
 
-**Last reviewed:** 2026-10-14
+**Last reviewed:** 2026-10-15
 **Status:** Portfolio prototype in active development. Not production ready.
 
-## Latest verification — 2026-10-14
+## Inbox redelivery PR verification — 2026-10-15
+
+Verified locally from PR #1 head `278f5378802d123183c5dcbd8c2fd67d5999b526` on Windows with .NET SDK 10.0.401 and Docker Desktop 29.2.0.
+
+| Check | Result |
+|---|---|
+| `dotnet restore Blackbox.slnx` | Passed. |
+| `dotnet build Blackbox.slnx --no-restore --configuration Release --warnaserror` | Passed: 0 warnings and 0 errors. |
+| `dotnet test tests/Blackbox.UnitTests/Blackbox.UnitTests.csproj --no-build --configuration Release` | Passed: 71/71. |
+| `BLACKBOX_TESTCONTAINERS=true dotnet test tests/Blackbox.IntegrationTests/Blackbox.IntegrationTests.csproj --no-build --configuration Release` | Passed: 8/8 PostgreSQL-backed tests, including new redelivery and concurrent-delivery cases. |
+| GitHub Actions run #9 and rerun | Not green. The backend job ended before any step ran (`runner_id: 0`, empty step list, about 2 seconds); the logs endpoint returned `BlobNotFound`. The GitHub-side cause is unknown, so CI remains unresolved. |
+| Full Kafka/PostgreSQL redelivery E2E | Not run for this change. The new tests exercise the PostgreSQL Inbox processor, not a live Kafka consumer and offset commit. |
+
+The local build and tests passed; this does not establish that GitHub Actions is healthy or that a replay through Kafka is verified. The previous full Compose/Playwright audit is recorded separately below and predates the Inbox change.
+
+## Previous full-stack verification — 2026-10-14
 
 Verified on the local Windows working tree with .NET SDK 10.0.401, Docker Desktop 29.2.0, and Node.js 24.12.0. The current verification includes a fix to the local runner so its readiness URL follows Docker Compose's process-environment port override.
 
@@ -49,7 +64,7 @@ An earlier version of this file reported 67 passing unit tests; the current coun
 - Workflow payload validation rejects invalid JSON, U+0000 characters unsupported by PostgreSQL `jsonb`, and payloads larger than 256 KiB before persistence.
 - Inventory reservation uses a PostgreSQL row lock and applies domain capacity rules.
 - The worker publishes Outbox records through a required Kafka producer. It claims one row with `FOR UPDATE SKIP LOCKED`, holds the transaction through broker acknowledgement, retries failures, and creates a DLQ record after five attempts.
-- The Kafka consumer records topic, partition, and offset in the Inbox before committing the Kafka offset. The Inbox currently records receipt only; it does not perform a business operation.
+- The Kafka consumer uses a valid domain `EventId` as its Inbox identity and falls back to topic/partition/offset for other valid JSON messages. A PostgreSQL unique index and `ON CONFLICT DO NOTHING` handle concurrent duplicate receipts; the offset is committed after insert or duplicate detection. The Inbox still records receipt only and does not perform a business operation. Malformed JSON and a repeated `EventId` with different content need explicit poison-message/conflict handling.
 - The local Compose `kafka-init` service creates `blackbox.workflow.events` and `blackbox.resource.events`. A separately managed Kafka cluster must provision these topics before starting the Worker.
 - Delivery is at least once. A publish accepted by Kafka followed by a failed database commit can be delivered again.
 - The DLQ replay endpoint only handles quarantined `CarrierDispatch` simulator records and now validates their stored workflow ID and destination. Outbox DLQ records return `501` until a safe operator-controlled requeue path is implemented; the carrier simulator must not mark Kafka events as replayed.
@@ -70,10 +85,10 @@ An earlier version of this file reported 67 passing unit tests; the current coun
 
 ## Recommended next milestones
 
-1. Run CI with Docker enabled; fix any Testcontainers, Compose, or Playwright failures and publish the green workflow badge.
+1. Diagnose why GitHub Actions jobs are failing before runner startup, then obtain a green workflow run; the local .NET checks pass but remote CI remains unresolved.
 2. Add EF migrations and a migration test from an empty PostgreSQL instance.
 3. Add Outbox retry timestamps/backoff, retryable vs permanent error classification, and operator-controlled DLQ replay for Kafka events.
-4. Extend Inbox processing so a real business effect and Inbox record commit in one PostgreSQL transaction; test redelivery and concurrent consumers.
+4. Extend Inbox processing so a real business effect and Inbox record commit in one PostgreSQL transaction; detect EventId/content conflicts, route poison messages safely, and test replay through Kafka and concurrent delivery.
 5. Export metrics/traces to an actual local collector and verify the endpoints with integration tests.
 6. Add workflow-specific schema validation, structured error handling for missing workflows, and API contract tests. Payload syntax, null-character, and size checks are already implemented.
 7. Add API-level tests proving experimental routes are absent in `Production`, and replace the shared API key with a managed identity/authorization model before any real deployment.
