@@ -71,7 +71,7 @@ Directly publishing a broker message after a database write creates a failure wi
 
 - **Transactional Outbox:** workflow state and its event are saved in one PostgreSQL transaction; a worker publishes pending records through Kafka.
 - **At-least-once delivery:** worker locks prevent two workers from publishing the same row concurrently. A crash after broker acknowledgement can still produce a duplicate, which consumers must handle.
-- **Inbox receipts:** the consumer stores `(consumer, topic, partition, offset)` before committing the Kafka offset. It currently records receipt only; no business handler is attached.
+- **Idempotent Inbox receipts:** domain-event `EventId` values are stable in the serialized payload, so a republished event is recognized even at a different Kafka offset. PostgreSQL's unique `(consumer_name, message_id)` index plus `ON CONFLICT DO NOTHING` makes the receipt insert safe under concurrent delivery. The consumer commits the Kafka offset only after the receipt is inserted or a duplicate is confirmed. The current consumer persists receipts only; it does not yet apply a downstream business side effect.
 - **Concurrency and idempotency:** PostgreSQL row locks protect inventory reservations; unique correlation IDs make concurrent duplicate create requests converge on one workflow.
 - **Bounded failure handling:** the Outbox retries publish failures and creates a DLQ record after five attempts.
 - **Explicit DLQ replay boundary:** only carrier simulator records can be replayed today. Kafka Outbox DLQ replay is not implemented and returns `501` instead of falsely reporting the event as replayed.
@@ -104,14 +104,37 @@ Client --X-API-Key--> ASP.NET Core API
                               inbox receipt in PostgreSQL
 ```
 
-PostgreSQL is the source of truth for workflow state and Outbox/Inbox records. Kafka delivery is **at least once**. The Outbox row lock prevents concurrent workers from publishing the same row at the same time. If publish succeeds and the database transaction then fails, the event can be published again after recovery. The Inbox uses the Kafka topic, partition, and offset to recognize a redelivery before committing the offset. Containers connect to Kafka at `kafka:9092`; host tools can connect through `localhost:29092` (or the configured `BLACKBOX_KAFKA_HOST_PORT`). Host tools can connect to PostgreSQL on `localhost:15432` by default; containers use `postgres:5432`.
+PostgreSQL is the source of truth for workflow state and Outbox/Inbox records. Kafka delivery is **at least once**. The Outbox row lock prevents concurrent workers from publishing the same row at the same time. If publish succeeds and the database transaction then fails, the event can be published again after recovery. For domain-event JSON, the Inbox uses the stable `EventId` instead of broker coordinates, so the same event is deduplicated after republication at a new offset. Messages without a valid `EventId` fall back to `topic:partition:offset`. The consumer commits only after the durable receipt insert or duplicate check completes. Containers connect to Kafka at `kafka:9092`; host tools can connect through `localhost:29092` (or the configured `BLACKBOX_KAFKA_HOST_PORT`). Host tools can connect to PostgreSQL on `localhost:15432` by default; containers use `postgres:5432`.
 
 ## Example API flow
 
 1. `POST /api/v1/workflows` with `X-API-Key` and `X-Idempotency-Key` creates the workflow and Outbox event atomically.
 2. `POST /api/v1/workflows/{id}/reserve` reserves stock under a PostgreSQL row lock.
-3. Compose creates the `blackbox.workflow.events` and `blackbox.resource.events` Kafka topics. The worker publishes Outbox events and persists consumer receipts in the Inbox.
+3. Compose creates the `blackbox.workflow.events` and `blackbox.resource.events` Kafka topics. The worker publishes Outbox events and persists Inbox receipts keyed by the event's stable `EventId`.
 4. `POST /api/v1/workflows/{id}/complete` advances the workflow state machine.
+
+
+### Redelivery demo (same EventId, new Kafka offset)
+
+After creating a workflow through the API and waiting for the worker to log `Recorded Kafka event`, republish the exact persisted `WorkflowCreated.v1` payload as a new Kafka record:
+
+```bash
+docker compose exec -T postgres psql -U blackbox_user -d blackbox_db -Atc "SELECT payload::text FROM outbox_messages WHERE event_type = 'WorkflowCreated.v1' ORDER BY created_at DESC LIMIT 1" |
+  docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka:9092 --topic blackbox.workflow.events
+```
+
+The worker should log `Skipping duplicate Kafka delivery`. Verify the receipt for the event ID printed by the first query:
+
+```sql
+SELECT message_id, COUNT(*) AS receipts
+FROM inbox_messages
+WHERE consumer_name = 'blackbox-inbox-v2'
+GROUP BY message_id
+ORDER BY message_id DESC
+LIMIT 10;
+```
+
+Each event ID should have one receipt. The integration test `InboxProcessor_RedeliveredEventAtNewKafkaOffset_ShouldPersistOneReceipt` reproduces the database-commit / Kafka-offset-retry case with two separate DbContexts.
 
 Reusing the same idempotency key with a different JSON value returns `409 Conflict`. Object key order and insignificant whitespace do not change the payload value, so a PostgreSQL `jsonb` round trip does not break retries.
 Workflow payloads must contain valid JSON, must not contain a U+0000 null character (which PostgreSQL `jsonb` cannot store), and are limited to 256 KiB; invalid JSON receives `400 Bad Request` and oversized payloads receive `413 Payload Too Large`.
@@ -130,7 +153,7 @@ Order state and the event to publish are written in the same PostgreSQL transact
 
 ### Inbox receipt and workflow boundary
 
-The consumer records Kafka topic, partition, and offset to establish receipt before offset commit. It does not yet attach a business handler, so the inbox is a delivery-deduplication boundary rather than a complete downstream order workflow.
+The consumer extracts `EventId` from the event JSON and inserts the receipt with PostgreSQL `ON CONFLICT DO NOTHING`. A repeated event at another topic offset leaves one receipt, and the worker commits that new offset after the duplicate is detected. Payloads without a valid `EventId` use their broker coordinates as a fallback. The consumer still records receipt only; no downstream business handler is attached.
 
 ### Concurrent order creation
 
@@ -188,6 +211,8 @@ Stop the stack with `docker compose down`. Add `--volumes` only when you intenti
 dotnet test tests/Blackbox.UnitTests/Blackbox.UnitTests.csproj
 dotnet test tests/Blackbox.IntegrationTests/Blackbox.IntegrationTests.csproj
 ```
+
+The PostgreSQL suite includes `InboxProcessor_RedeliveredEventAtNewKafkaOffset_ShouldPersistOneReceipt`, which verifies that the same logical event delivered at a new offset creates one durable receipt.
 
 Integration tests use Testcontainers and require a working Docker daemon. Without `BLACKBOX_TESTCONTAINERS=true`, xUnit marks them skipped by design. With the flag enabled, a missing or unreachable Docker daemon fails the test run; skipped tests are not counted as passing PostgreSQL verification.
 
@@ -264,7 +289,7 @@ The repository contains performance lab plans, but no benchmark result is claime
 ## Known limitations
 
 - The API uses EF Core `EnsureCreated` for this small demo. It does not have an upgrade-safe migration workflow yet; do not use it to evolve a persistent production database.
-- The Inbox proves durable receipt/deduplication but does not execute a domain side effect. A real consumer must commit its business effect and Inbox record in the same database transaction.
+- The Inbox durably deduplicates receipts by `EventId`, but this consumer does not yet execute a domain side effect. A downstream business handler must commit its effect and Inbox receipt in the same PostgreSQL transaction.
 - The Outbox retries immediately on subsequent worker polls and has a fixed five-attempt ceiling; exponential backoff and operator-controlled replay need further work.
 - API key authentication is a simple portfolio example. Production deployment needs managed secrets, key rotation, scoped identities/authorization policies, rate limits, and TLS.
 - CRDT and audit ledger modules are in-memory demonstrations; multiple API replicas do not share their state.
