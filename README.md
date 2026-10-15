@@ -116,25 +116,25 @@ PostgreSQL is the source of truth for workflow state and Outbox/Inbox records. K
 
 ### Redelivery demo (same EventId, new Kafka offset)
 
-After creating a workflow through the API and waiting for the worker to log `Recorded Kafka event`, republish the exact persisted `WorkflowCreated.v1` payload as a new Kafka record:
+After creating a workflow through the API and waiting for the worker to log `Recorded Kafka event`, republish the exact persisted `WorkflowCreated.v1` payload as a new Kafka record. The command prints the payload first; note its `EventId` for the verification query below:
 
 ```bash
-docker compose exec -T postgres psql -U blackbox_user -d blackbox_db -Atc "SELECT payload::text FROM outbox_messages WHERE event_type = 'WorkflowCreated.v1' ORDER BY created_at DESC LIMIT 1" |
-  docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka:9092 --topic blackbox.workflow.events
+event_json="$(docker compose exec -T postgres psql -U blackbox_user -d blackbox_db -Atc "SELECT payload::text FROM outbox_messages WHERE event_type = 'WorkflowCreated.v1' ORDER BY created_at DESC LIMIT 1")"
+printf '%s\\n' "$event_json"
+printf '%s\\n' "$event_json" | docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka:9092 --topic blackbox.workflow.events
 ```
 
-The worker should log `Skipping duplicate Kafka delivery`. Verify the receipt for the event ID printed by the first query:
+The worker should log `Skipping duplicate Kafka delivery`. Replace `<EventId>` with the ID from the payload above and verify the stored receipt:
 
 ```sql
 SELECT message_id, COUNT(*) AS receipts
 FROM inbox_messages
 WHERE consumer_name = 'blackbox-inbox-v2'
-GROUP BY message_id
-ORDER BY message_id DESC
-LIMIT 10;
+  AND message_id = '<EventId>'
+GROUP BY message_id;
 ```
 
-Each event ID should have one receipt. The integration test `InboxProcessor_RedeliveredEventAtNewKafkaOffset_ShouldPersistOneReceipt` reproduces the database-commit / Kafka-offset-retry case with two separate DbContexts.
+The result should contain one receipt. The sequential PostgreSQL integration test reproduces a worker restart between DB commit and Kafka offset commit; a second test verifies two concurrent deliveries still create one receipt.
 
 Reusing the same idempotency key with a different JSON value returns `409 Conflict`. Object key order and insignificant whitespace do not change the payload value, so a PostgreSQL `jsonb` round trip does not break retries.
 Workflow payloads must contain valid JSON, must not contain a U+0000 null character (which PostgreSQL `jsonb` cannot store), and are limited to 256 KiB; invalid JSON receives `400 Bad Request` and oversized payloads receive `413 Payload Too Large`.
