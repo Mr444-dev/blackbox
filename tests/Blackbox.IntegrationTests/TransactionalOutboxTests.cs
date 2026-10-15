@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Blackbox.Core.Domain;
+using Blackbox.Core.Domain.Events;
 using Blackbox.Core.Outbox;
 using Blackbox.Infrastructure.Messaging;
 using Blackbox.Infrastructure.Persistence;
@@ -153,6 +155,52 @@ public class TransactionalOutboxTests : IClassFixture<PostgreSqlFixture>
         updatedMessage.Should().NotBeNull();
         updatedMessage!.Status.Should().Be(OutboxStatus.Published);
         updatedMessage.PublishedAt.Should().NotBeNull();
+    }
+
+
+    [DockerFact]
+    public async Task InboxProcessor_RedeliveredEventAtNewKafkaOffset_ShouldPersistOneReceipt()
+    {
+        var eventId = Guid.NewGuid();
+        var domainEvent = new WorkflowCreatedEvent(
+            Guid.NewGuid(),
+            $"INBOX-REDELIVERY-{Guid.NewGuid():N}",
+            "{\"orderId\":\"redelivery-test\"}")
+        {
+            EventId = eventId
+        };
+        var payload = JsonSerializer.Serialize(domainEvent);
+        const string consumerName = "integration-test-inbox";
+
+        var firstDeliveryId = InboxMessageProcessor.ResolveMessageId(
+            payload,
+            "blackbox.workflow.events:0:10");
+        var redeliveryId = InboxMessageProcessor.ResolveMessageId(
+            payload,
+            "blackbox.workflow.events:0:11");
+
+        firstDeliveryId.Should().Be(eventId.ToString("D"));
+        redeliveryId.Should().Be(firstDeliveryId);
+
+        // A fresh DbContext models a worker restart after the DB commit but before Kafka offset commit.
+        await using (var firstContext = _fixture.CreateDbContext())
+        {
+            var firstDelivery = await new InboxMessageProcessor(firstContext)
+                .RecordIfNewAsync(consumerName, firstDeliveryId, payload);
+            firstDelivery.Should().BeTrue();
+        }
+
+        await using (var restartedContext = _fixture.CreateDbContext())
+        {
+            var replayedDelivery = await new InboxMessageProcessor(restartedContext)
+                .RecordIfNewAsync(consumerName, redeliveryId, payload);
+            replayedDelivery.Should().BeFalse();
+
+            var receiptCount = await restartedContext.InboxMessages.CountAsync(message =>
+                message.ConsumerName == consumerName &&
+                message.MessageId == eventId.ToString("D"));
+            receiptCount.Should().Be(1);
+        }
     }
 
     [DockerFact]
