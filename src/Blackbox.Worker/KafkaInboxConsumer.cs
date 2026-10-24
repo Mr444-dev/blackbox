@@ -1,14 +1,12 @@
-using System.Text;
-using Blackbox.Core.Outbox;
-using Blackbox.Infrastructure.Persistence;
+using Blackbox.Infrastructure.Services;
 using Confluent.Kafka;
-using Microsoft.EntityFrameworkCore;
 
 namespace Blackbox.Worker;
 
 public sealed class KafkaInboxConsumer : BackgroundService
 {
-    private const string ConsumerName = "blackbox-inbox-v1";
+    // The v2 group uses logical domain EventIds rather than broker coordinates for deduplication.
+    private const string ConsumerName = "blackbox-inbox-v2";
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<KafkaInboxConsumer> _logger;
     private readonly string _bootstrapServers;
@@ -55,23 +53,43 @@ public sealed class KafkaInboxConsumer : BackgroundService
             if (record is null || record.IsPartitionEOF)
                 continue;
 
-            var messageId = $"{record.Topic}:{record.Partition.Value}:{record.Offset.Value}";
+            var transportMessageId = $"{record.Topic}:{record.Partition.Value}:{record.Offset.Value}";
+            var payload = record.Message.Value ?? string.Empty;
+            var messageId = InboxMessageProcessor.ResolveMessageId(payload, transportMessageId);
             try
             {
                 await using var scope = _scopeFactory.CreateAsyncScope();
-                var db = scope.ServiceProvider.GetRequiredService<BlackboxDbContext>();
-                var alreadyRecorded = await db.InboxMessages.AnyAsync(
-                    message => message.ConsumerName == ConsumerName && message.MessageId == messageId,
+                var processor = scope.ServiceProvider.GetRequiredService<IInboxMessageProcessor>();
+                var result = await processor.ProcessAsync(
+                    ConsumerName,
+                    transportMessageId,
+                    payload,
                     stoppingToken);
 
-                if (!alreadyRecorded)
+                if (result == InboxProcessingResult.Processed)
                 {
-                    await db.InboxMessages.AddAsync(
-                        InboxMessage.Create(ConsumerName, messageId, record.Message.Value),
-                        stoppingToken);
-                    await db.SaveChangesAsync(stoppingToken);
+                    _logger.LogInformation("Processed Kafka event {MessageId} into the workflow event projection.", messageId);
+                }
+                else if (result == InboxProcessingResult.ReceiptRecorded)
+                {
+                    _logger.LogInformation(
+                        "Recorded Kafka receipt {MessageId}; no EventId was present for workflow projection.",
+                        messageId);
+                }
+                else if (result == InboxProcessingResult.Duplicate)
+                {
+                    _logger.LogInformation(
+                        "Skipping duplicate Kafka delivery for event {MessageId}; committing its offset.",
+                        messageId);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Quarantined Kafka message {MessageId}; committing its offset after durable quarantine.",
+                        messageId);
                 }
 
+                // Commit only after the projection, duplicate check, or quarantine has committed in PostgreSQL.
                 consumer.Commit(record);
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)

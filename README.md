@@ -18,7 +18,7 @@
 
 Blackbox explores order processing across an HTTP API, PostgreSQL, Kafka, a background worker, and an in-process carrier failure simulator. Its central engineering question is how to keep workflow state and event publication consistent across failures and retries. The carrier path does not call a real third-party API.
 
-This repository is an active portfolio prototype, not production software. The latest local audit passed the Release build, 71 unit tests, 6 PostgreSQL integration tests, and all 32 Playwright scenarios on two fresh isolated databases. The Compose E2E run confirmed 83 Outbox events published to Kafka and 83 Inbox receipts persisted. See [Engineering Status](ENGINEERING_STATUS.md) for the exact checks and remaining limits.
+This repository is an active portfolio prototype, not production software. On 2026-10-15 the current worktree passed a Release build with zero warnings, all 71 unit tests, and all 14 PostgreSQL Testcontainers tests. A previously recorded isolated Compose smoke test created a workflow, observed its live Kafka Inbox receipt and projection, republished the event at a new Kafka offset, and confirmed both remained at one. It also verified that a changed payload with the same EventId and malformed JSON were quarantined, with both EF migrations applied. The final poison-message deduplication refinement is covered by the current PostgreSQL tests; the Compose smoke test was not repeated after that adjustment. This does not simulate a worker crash between database commit and offset commit. GitHub Actions run [#11](https://github.com/Mr444-dev/blackbox/actions/runs/38799910247) on this commit failed before any steps were recorded; its log endpoint returned `BlobNotFound`, and the Compose job was skipped. Remote CI is unresolved. The earlier 32/32 Playwright audit predates this change. See [Engineering Status](ENGINEERING_STATUS.md) for evidence and remaining limits.
 
 ## Recorded demo
 
@@ -71,10 +71,10 @@ Directly publishing a broker message after a database write creates a failure wi
 
 - **Transactional Outbox:** workflow state and its event are saved in one PostgreSQL transaction; a worker publishes pending records through Kafka.
 - **At-least-once delivery:** worker locks prevent two workers from publishing the same row concurrently. A crash after broker acknowledgement can still produce a duplicate, which consumers must handle.
-- **Inbox receipts:** the consumer stores `(consumer, topic, partition, offset)` before committing the Kafka offset. It currently records receipt only; no business handler is attached.
+- **Transactional Inbox projection:** domain-event `EventId` values are stable in the serialized payload, so a republished event is recognized even at a different Kafka offset. PostgreSQL's unique `(consumer_name, message_id)` index plus `ON CONFLICT DO NOTHING` makes the receipt insert safe under concurrent delivery. A new event updates a workflow-event read model in the same transaction as its receipt; duplicate events do not repeat that effect. Invalid JSON, ambiguous JSON, and EventId/content conflicts are stored in the DLQ with deduplication keys and their Kafka transport IDs before the consumer commits their offsets. The projection is not authoritative workflow state.
 - **Concurrency and idempotency:** PostgreSQL row locks protect inventory reservations; unique correlation IDs make concurrent duplicate create requests converge on one workflow.
 - **Bounded failure handling:** the Outbox retries publish failures and creates a DLQ record after five attempts.
-- **Explicit DLQ replay boundary:** only carrier simulator records can be replayed today. Kafka Outbox DLQ replay is not implemented and returns `501` instead of falsely reporting the event as replayed.
+- **Explicit DLQ replay boundary:** only carrier simulator records can be replayed today. Kafka Outbox and Inbox quarantine records are durable but do not have an operator-controlled replay endpoint; Kafka Outbox replay returns `501` instead of falsely reporting the event as replayed.
 - **API access:** application routes require `X-API-Key` with at least 32 UTF-8 bytes; liveness and database readiness endpoints are public.
 - **Development API docs:** Swagger UI is available without an API key in Development and exposes an `Authorize` control for protected routes; Swagger is disabled in Production.
 - **Verification scorecard:** checks scenario evidence provided to the engine. Missing inputs are marked not evaluated; it does not claim formal verification or production SLO measurements.
@@ -100,18 +100,51 @@ Client --X-API-Key--> ASP.NET Core API
                                              v
                                   Inbox consumer
                                              |
-                                             v
-                              inbox receipt in PostgreSQL
+                      one PostgreSQL transaction
+                              /              \\
+                             v                v
+                     Inbox receipt    workflow-event projection
 ```
 
-PostgreSQL is the source of truth for workflow state and Outbox/Inbox records. Kafka delivery is **at least once**. The Outbox row lock prevents concurrent workers from publishing the same row at the same time. If publish succeeds and the database transaction then fails, the event can be published again after recovery. The Inbox uses the Kafka topic, partition, and offset to recognize a redelivery before committing the offset. Containers connect to Kafka at `kafka:9092`; host tools can connect through `localhost:29092` (or the configured `BLACKBOX_KAFKA_HOST_PORT`). Host tools can connect to PostgreSQL on `localhost:15432` by default; containers use `postgres:5432`.
+PostgreSQL is the source of truth for workflow state and Outbox/Inbox records. Kafka delivery is **at least once**. The Outbox row lock prevents concurrent workers from publishing the same row at the same time. If publish succeeds and the database transaction then fails, the event can be published again after recovery. For domain-event JSON, the Inbox uses the stable `EventId` instead of broker coordinates, so the same event is deduplicated after republication at a new offset. A newly accepted domain event updates `workflow_event_projections` atomically with its Inbox receipt; the projection summarizes event traffic and does not replace the authoritative workflow row. Valid JSON without a usable domain `EventId` is stored as a transport-keyed receipt and does not update that projection. Invalid JSON and same-ID/different-content deliveries are quarantined durably before the consumer commits those offsets. The consumer group is `blackbox-inbox-v2` because it now uses a different message identity; with no existing v2 offsets, it starts at the earliest retained message and records that history under the new consumer name. Containers connect to Kafka at `kafka:9092`; host tools can connect through `localhost:29092` (or the configured `BLACKBOX_KAFKA_HOST_PORT`). Host tools can connect to PostgreSQL on `localhost:15432` by default; containers use `postgres:5432`.
 
 ## Example API flow
 
 1. `POST /api/v1/workflows` with `X-API-Key` and `X-Idempotency-Key` creates the workflow and Outbox event atomically.
 2. `POST /api/v1/workflows/{id}/reserve` reserves stock under a PostgreSQL row lock.
-3. Compose creates the `blackbox.workflow.events` and `blackbox.resource.events` Kafka topics. The worker publishes Outbox events and persists consumer receipts in the Inbox.
+3. Compose creates the `blackbox.workflow.events` and `blackbox.resource.events` Kafka topics. The worker publishes Outbox events, records Inbox receipts keyed by stable `EventId`, and updates the workflow-event projection in the same PostgreSQL transaction.
 4. `POST /api/v1/workflows/{id}/complete` advances the workflow state machine.
+
+
+### Redelivery demo (same EventId, new Kafka offset)
+
+After creating a workflow through the API and waiting for the worker to log `Recorded Kafka event`, republish the exact persisted `WorkflowCreated.v1` payload as a new Kafka record. The command prints the payload first; note its `EventId` for the verification query below:
+
+```bash
+event_json="$(docker compose exec -T postgres psql -U blackbox_user -d blackbox_db -Atc "SELECT payload::text FROM outbox_messages WHERE event_type = 'WorkflowCreated.v1' ORDER BY created_at DESC LIMIT 1")"
+printf '%s\n' "$event_json"
+printf '%s\n' "$event_json" | docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server kafka:9092 --topic blackbox.workflow.events
+```
+
+The worker should log `Skipping duplicate Kafka delivery`. Replace `<EventId>` with the ID from the payload above and verify the stored receipt:
+
+```sql
+SELECT message_id, COUNT(*) AS receipts
+FROM inbox_messages
+WHERE consumer_name = 'blackbox-inbox-v2'
+  AND message_id = '<EventId>'
+GROUP BY message_id;
+```
+
+The result should contain one receipt. Verify the projection effect remained single as well:
+
+```sql
+SELECT workflow_id, event_count, last_event_id, last_event_type
+FROM workflow_event_projections
+WHERE last_event_id = '<EventId>';
+```
+
+The sequential PostgreSQL integration test models a worker restart between DB commit and Kafka offset commit with a fresh DbContext; it does not restart a live Kafka worker. Concurrent-delivery, out-of-order events, mismatched-payload, duplicate-property, poison-JSON, migration, and schema-adoption tests cover the related database behavior, including preservation of a pre-existing workflow during schema adoption. Poison-message quarantine deduplicates retries of the same consumer and Kafka offset while retaining separate records for identical payloads at different offsets. The Playwright/Compose CI job checks that a live Kafka event produces both an Inbox receipt and a projection row.
 
 Reusing the same idempotency key with a different JSON value returns `409 Conflict`. Object key order and insignificant whitespace do not change the payload value, so a PostgreSQL `jsonb` round trip does not break retries.
 Workflow payloads must contain valid JSON, must not contain a U+0000 null character (which PostgreSQL `jsonb` cannot store), and are limited to 256 KiB; invalid JSON receives `400 Bad Request` and oversized payloads receive `413 Payload Too Large`.
@@ -130,7 +163,7 @@ Order state and the event to publish are written in the same PostgreSQL transact
 
 ### Inbox receipt and workflow boundary
 
-The consumer records Kafka topic, partition, and offset to establish receipt before offset commit. It does not yet attach a business handler, so the inbox is a delivery-deduplication boundary rather than a complete downstream order workflow.
+The consumer extracts `EventId` from domain-event JSON and inserts the receipt with PostgreSQL `ON CONFLICT DO NOTHING`. A new event also updates the event-summary projection in that transaction. A repeated event at another topic offset leaves one receipt and one projection effect, then the worker commits the duplicate offset. Payloads without a usable `EventId` use their broker coordinates as a fallback and are recorded without a workflow projection. Invalid JSON and mismatched payloads for an existing EventId go to a deduplicated DLQ entry before their offsets are committed.
 
 ### Concurrent order creation
 
@@ -139,11 +172,11 @@ Inventory reservation uses database locking, and a unique correlation identifier
 ## Design Decisions and Trade-offs
 
 - PostgreSQL is the source of truth for workflow and outbox state; Kafka delivery is at least once, so duplicates remain possible and consumers need idempotency.
-- The inbox records broker receipt but does not perform a business side effect yet. This keeps the current guarantee narrow and avoids claiming exactly-once processing.
+- The Inbox projection is a derived read model. It does not mutate or replace authoritative workflow status, and it does not make Kafka delivery exactly once.
 - The API uses one shared API key for a local portfolio demo; production identity, scoped authorization, key rotation, rate limiting, and TLS are out of scope. Keys shorter than 32 UTF-8 bytes are rejected.
 - Carrier outcomes are simulated in process; no partner account or API credential is required. The Polly pipeline is created by a scoped service, so breaker state is not retained across API requests. Do not treat it as a production circuit-breaker integration.
 - Experimental in-memory, evaluation, AI recommendation, and cryptography endpoints are not mapped when `ASPNETCORE_ENVIRONMENT` is `Production`; the default Compose profile is `Development` so the portfolio demonstrations remain available locally.
-- EF Core `EnsureCreated` keeps the disposable demo simple but is not an upgrade-safe schema migration strategy.
+- EF Core migrations initialize new databases. Databases previously created with `EnsureCreated` need the checked legacy-schema adoption step below before this version starts; take a verified backup first.
 
 ## Requirements
 
@@ -154,6 +187,17 @@ Inventory reservation uses database locking, and a unique correlation identifier
 ## Run locally
 
 1. Copy `.env.example` to `.env` and replace both values with local development secrets. Generate an API key with at least 32 random bytes, for example in PowerShell 7: `[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))`. The default host ports are API `5000`, PostgreSQL `15432`, and Kafka `29092`; change the corresponding `BLACKBOX_*_PORT` value in `.env` if a port is occupied. Process-level `BLACKBOX_*_PORT` variables override `.env`, which is useful for running an isolated stack beside another local instance.
+
+   If this PostgreSQL volume was initialized by an earlier Blackbox version that used EF Core `EnsureCreated`, stop the old API and Worker, take a verified backup, and start only PostgreSQL before running the adoption script:
+
+   ```powershell
+   docker compose stop api worker
+   docker compose up -d postgres
+   Get-Content -Raw .\scripts\adopt-ensurecreated-schema.sql | docker compose exec -T postgres psql -U blackbox_user -d blackbox_db -v ON_ERROR_STOP=1
+   ```
+
+   The script checks the known legacy schema and records the baseline migration without changing application rows. It aborts if the schema differs or migration history already exists. Do not run it against a fresh or unknown database; new databases are migrated automatically.
+
 2. Start the stack from the repository root:
 
    ```bash
@@ -176,7 +220,7 @@ Inventory reservation uses database locking, and a unique correlation identifier
      -d '{"payloadJson":"{\"orderId\":\"demo-order-001\"}"}'
    ```
 
-Swagger and experimental endpoints are available only in Development. Application endpoints require `X-API-Key`. `/health` is a liveness probe; `/health/ready` checks PostgreSQL connectivity. The API fails startup if schema creation or seed initialization fails. The local Compose credentials are for an isolated developer demo only.
+Swagger and experimental endpoints are available only in Development. Application endpoints require `X-API-Key`. `/health` is a liveness probe; `/health/ready` checks PostgreSQL connectivity. The API fails startup if a migration or seed initialization fails. The local Compose credentials are for an isolated developer demo only.
 
 The Compose stack creates its two Kafka topics with a one-shot `kafka-init` service. If you run the Worker against a separately managed Kafka cluster, provision `blackbox.workflow.events` and `blackbox.resource.events` before starting the Worker.
 
@@ -188,6 +232,8 @@ Stop the stack with `docker compose down`. Add `--volumes` only when you intenti
 dotnet test tests/Blackbox.UnitTests/Blackbox.UnitTests.csproj
 dotnet test tests/Blackbox.IntegrationTests/Blackbox.IntegrationTests.csproj
 ```
+
+The PostgreSQL suite includes `InboxProcessor_RedeliveredEventAtNewKafkaOffset_ShouldPersistOneReceipt`, which verifies that the same logical event delivered at a new offset creates one durable receipt.
 
 Integration tests use Testcontainers and require a working Docker daemon. Without `BLACKBOX_TESTCONTAINERS=true`, xUnit marks them skipped by design. With the flag enabled, a missing or unreachable Docker daemon fails the test run; skipped tests are not counted as passing PostgreSQL verification.
 
@@ -223,12 +269,14 @@ The runner preserves existing non-placeholder values in the Git-ignored `.env`, 
 
 The script prints the isolated Compose project name and a matching `docker compose -p ... down` command. That command stops containers without deleting the volume.
 
-GitHub Actions builds Release, runs the .NET tests, starts the full Compose stack, waits for readiness, runs Playwright, and checks that Outbox events reached Kafka and were recorded by the Inbox. Failures fail the workflow.
+GitHub Actions builds Release, runs the .NET tests, starts the full Compose stack, waits for readiness, runs Playwright, and checks that Outbox events reached Kafka and produced both an Inbox receipt and workflow-event projection. Failures fail the workflow.
 
 ## Documentation
 
 - [Engineering status and verified checks](ENGINEERING_STATUS.md)
 - [Architecture notes](docs/architecture/)
+- [Kubernetes deployment prerequisites](deploy/k8s/README.md)
+- [Terraform deployment and state handling](deploy/terraform/README.md)
 - [Project direction and roadmap](docs/PROJECT_PLAN.md)
 - [Chaos test plan](docs/chaos/CHAOS_ENGINEERING_LAB.md)
 - [Performance lab plan](docs/benchmarks/SQL_PERFORMANCE_LAB.md)
@@ -263,8 +311,9 @@ The repository contains performance lab plans, but no benchmark result is claime
 
 ## Known limitations
 
-- The API uses EF Core `EnsureCreated` for this small demo. It does not have an upgrade-safe migration workflow yet; do not use it to evolve a persistent production database.
-- The Inbox proves durable receipt/deduplication but does not execute a domain side effect. A real consumer must commit its business effect and Inbox record in the same database transaction.
+- EF Core migrations create and evolve the schema. The initial baseline matches the schema produced by the former `EnsureCreated` bootstrap; an existing database must pass the explicit adoption script before startup. Back up persistent data before schema changes. This remains a portfolio prototype, not a production deployment plan.
+- The Inbox durably deduplicates receipts and updates a workflow-event read model in the same PostgreSQL transaction. The projection is not canonical workflow state. Local Compose verified delivery, a new-offset duplicate, a content conflict, and malformed JSON, but did not inject a worker crash between database commit and offset commit.
+- Inbox poison/conflict messages are persisted in the DLQ with their Kafka transport ID. There is no operator-controlled Inbox quarantine replay API yet; the existing replay route only supports carrier simulator records.
 - The Outbox retries immediately on subsequent worker polls and has a fixed five-attempt ceiling; exponential backoff and operator-controlled replay need further work.
 - API key authentication is a simple portfolio example. Production deployment needs managed secrets, key rotation, scoped identities/authorization policies, rate limits, and TLS.
 - CRDT and audit ledger modules are in-memory demonstrations; multiple API replicas do not share their state.
@@ -272,7 +321,7 @@ The repository contains performance lab plans, but no benchmark result is claime
 
 ## Roadmap
 
-See [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md). The next reliability milestones are durable business effects in the Inbox, backoff and operator-managed Kafka DLQ replay, versioned migrations, and verified PostgreSQL/E2E runs.
+See [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md). Next reliability milestones are failure injection around the Kafka offset commit, Outbox retry backoff, and an operator-safe Kafka DLQ replay path.
 
 ## License
 

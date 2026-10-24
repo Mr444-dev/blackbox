@@ -28,4 +28,10 @@
     <ProjectReference Include="..\..\src\Blackbox.Api\Blackbox.Api.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\scripts\adopt-ensurecreated-schema.sql"
+          Link="scripts\adopt-ensurecreated-schema.sql"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

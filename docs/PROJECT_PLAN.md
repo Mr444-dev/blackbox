@@ -12,7 +12,7 @@ The portfolio should emphasize implemented engineering decisions and reproducibl
 
 - ASP.NET Core API with API key authentication.
 - PostgreSQL workflow state, resource inventory, Outbox, Inbox, and DLQ records.
-- A worker that publishes Outbox records to Kafka and records Inbox receipts.
+- A worker that publishes Outbox records to Kafka, records Inbox receipts, and maintains a transactional workflow-event projection.
 - Domain-level workflow transitions and capacity invariants.
 - A local Compose environment and automated .NET/Playwright checks.
 
@@ -28,10 +28,11 @@ Current gaps are tracked in [Engineering Status](../ENGINEERING_STATUS.md). The 
 
 ### 2. Persistence and messaging correctness
 
-- Replace `EnsureCreated` with EF Core migrations.
+- EF Core migrations initialize new databases. Existing `EnsureCreated` databases require the checked baseline-adoption script before the first migrated startup.
 - Add durable Outbox scheduling with bounded exponential backoff and clear poison-message handling.
-- Add a consumer business handler whose effect and Inbox receipt commit in the same transaction.
-- Test duplicate delivery, broker restart, worker concurrency, and process interruption.
+- Fault-inject a worker restart after the database transaction commits but before the Kafka offset commits.
+- Add operator-controlled Kafka DLQ replay after an atomic claim and explicit authorization are in place.
+- Test duplicate delivery, broker restart, worker concurrency, and process interruption through the live Compose stack.
 
 ### 3. Operability and API quality
 

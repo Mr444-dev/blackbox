@@ -116,7 +116,7 @@ app.UseAuthorization();
 using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<BlackboxDbContext>();
-    await dbContext.Database.EnsureCreatedAsync();
+    await dbContext.Database.MigrateAsync();
     if (!await dbContext.Resources.AnyAsync())
     {
         await dbContext.Resources.AddRangeAsync(
@@ -353,6 +353,7 @@ app.MapGet("/api/v1/dlq", async ([FromServices] BlackboxDbContext dbContext) =>
     {
         id = m.Id,
         workflowId = m.WorkflowId,
+        transportMessageId = m.TransportMessageId,
         source = m.Source,
         exceptionMessage = m.ExceptionMessage,
         status = m.Status.ToString(),

@@ -10,7 +10,6 @@ metadata:
   namespace: blackbox
 data:
   ASPNETCORE_ENVIRONMENT: "Production"
-  ConnectionStrings__DefaultConnection: "Host=blackbox-postgres;Port=5432;Database=blackbox_db;Username=blackbox_user;Password=[REDACTED]"
   Kafka__BootstrapServers: "blackbox-kafka:9092"
 ---
 apiVersion: apps/v1
@@ -47,6 +46,17 @@ spec:
           envFrom:
             - configMapRef:
                 name: blackbox-config
+          env:
+            - name: ConnectionStrings__DefaultConnection
+              valueFrom:
+                secretKeyRef:
+                  name: blackbox-runtime
+                  key: connection-string
+            - name: Security__ApiKey
+              valueFrom:
+                secretKeyRef:
+                  name: blackbox-runtime
+                  key: api-key
           resources:
             requests:
               cpu: "250m"
@@ -64,7 +74,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5
@@ -111,6 +121,12 @@ spec:
           envFrom:
             - configMapRef:
                 name: blackbox-config
+          env:
+            - name: ConnectionStrings__DefaultConnection
+              valueFrom:
+                secretKeyRef:
+                  name: blackbox-runtime
+                  key: connection-string
           resources:
             requests:
               cpu: "150m"

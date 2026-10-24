@@ -35,4 +35,19 @@ Thumbs.db
 !.env.example
 !.env.*.example
 secrets.json
+
+# Terraform state and plan files can contain credentials and other sensitive values.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
 appsettings.*.local.json

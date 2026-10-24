@@ -33,3 +33,10 @@ variable "postgres_admin_login" {
   description = "PostgreSQL flexible server administrator username"
   default     = "blackbox_admin"
 }
+
+variable "postgres_admin_password" {
+  type        = string
+  description = "PostgreSQL administrator password supplied by the deployment environment"
+  sensitive   = true
+  nullable    = false
+}
