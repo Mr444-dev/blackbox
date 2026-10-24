@@ -275,6 +275,8 @@ GitHub Actions builds Release, runs the .NET tests, starts the full Compose stac
 
 - [Engineering status and verified checks](ENGINEERING_STATUS.md)
 - [Architecture notes](docs/architecture/)
+- [Kubernetes deployment prerequisites](deploy/k8s/README.md)
+- [Terraform deployment and state handling](deploy/terraform/README.md)
 - [Project direction and roadmap](docs/PROJECT_PLAN.md)
 - [Chaos test plan](docs/chaos/CHAOS_ENGINEERING_LAB.md)
 - [Performance lab plan](docs/benchmarks/SQL_PERFORMANCE_LAB.md)

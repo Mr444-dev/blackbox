@@ -75,7 +75,7 @@ resource "azurerm_postgresql_flexible_server" "postgres" {
   version                = "16"
   delegated_subnet_id    = azurerm_subnet.db_subnet.id
   administrator_login    = var.postgres_admin_login
-  administrator_password = "SuperSecretSecureP@ssword2026!"
+  administrator_password = var.postgres_admin_password
   storage_mb             = 32768
   sku_name               = "GP_Standard_D2ds_v5"
   zone                   = "1"
