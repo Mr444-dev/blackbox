@@ -1,0 +1,62 @@
+name: Mirror to GitLab
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "*"
+
+permissions:
+  contents: read
+
+# Serialize mirror pushes so rapid branch/tag updates cannot race each other.
+concurrency:
+  group: gitlab-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    # Do not run in forks. Pull requests do not trigger this workflow.
+    if: github.repository_owner == 'Mr444-dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip when GITLAB_TOKEN is not configured
+        id: token-check
+        shell: bash
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          if [[ -z "${GITLAB_TOKEN:-}" ]]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GITLAB_TOKEN is not configured; skipping the GitLab mirror."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mirror all branches and tags to GitLab
+        if: steps.token-check.outputs.configured == 'true'
+        shell: bash
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          mirror_dir="$(mktemp -d)"
+          askpass="$mirror_dir/git-askpass"
+          trap 'rm -rf "$mirror_dir"' EXIT
+
+          cat > "$askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' "oauth2" ;;
+            *Password*) printf '%s\n' "$GITLAB_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          chmod 700 "$askpass"
+
+          git clone --mirror "https://github.com/$GITHUB_REPOSITORY.git" "$mirror_dir/repository.git"
+          git -C "$mirror_dir/repository.git" remote add gitlab "https://gitlab.com/Mr444-dev/$repo_name.git"
+          GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git -C "$mirror_dir/repository.git" push --mirror gitlab
