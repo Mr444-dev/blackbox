@@ -1,0 +1,22 @@
+image: mcr.microsoft.com/dotnet/sdk:10.0
+
+stages:
+  - verify
+
+variables:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+  NUGET_PACKAGES: "$CI_PROJECT_DIR/.nuget/packages"
+
+cache:
+  key: "blackbox-nuget-$CI_COMMIT_REF_SLUG"
+  paths:
+    - .nuget/packages/
+
+verify-dotnet:
+  stage: verify
+  script:
+    - dotnet restore Blackbox.slnx
+    - dotnet build Blackbox.slnx --configuration Release --no-restore
+    - dotnet test tests/Blackbox.UnitTests/Blackbox.UnitTests.csproj --configuration Release --no-build --no-restore
