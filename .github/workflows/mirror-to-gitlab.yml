@@ -10,7 +10,6 @@ on:
 permissions:
   contents: read
 
-# Keep each repository's mirror pushes in order.
 concurrency:
   group: gitlab-mirror-${{ github.repository }}
   cancel-in-progress: false
@@ -51,8 +50,8 @@ jobs:
           cat > "$askpass" <<'ASKPASS'
           #!/bin/sh
           case "$1" in
-            *Username*) printf '%s\\n' "oauth2" ;;
-            *Password*) printf '%s\\n' "$GITLAB_TOKEN" ;;
+            *Username*) printf '%s\n' "oauth2" ;;
+            *Password*) printf '%s\n' "$GITLAB_TOKEN" ;;
             *) exit 1 ;;
           esac
           ASKPASS
