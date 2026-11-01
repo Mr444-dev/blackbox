@@ -3,9 +3,10 @@ name: Mirror to GitLab
 on:
   push:
     branches:
-      - main
+      - "**"
     tags:
-      - "*"
+      - "**"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -50,8 +51,8 @@ jobs:
           cat > "$askpass" <<'ASKPASS'
           #!/bin/sh
           case "$1" in
-            *Username*) printf '%s\n' "oauth2" ;;
-            *Password*) printf '%s\n' "$GITLAB_TOKEN" ;;
+            *Username*) printf '%s\\n' "oauth2" ;;
+            *Password*) printf '%s\\n' "$GITLAB_TOKEN" ;;
             *) exit 1 ;;
           esac
           ASKPASS
