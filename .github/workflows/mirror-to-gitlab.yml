@@ -3,16 +3,16 @@ name: Mirror to GitLab
 on:
   push:
     branches:
-      - "**"
+      - main
     tags:
       - "*"
 
 permissions:
   contents: read
 
-# Serialize mirror pushes so rapid branch/tag updates cannot race each other.
+# Keep each repository's mirror pushes in order.
 concurrency:
-  group: gitlab-mirror
+  group: gitlab-mirror-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -43,6 +43,7 @@ jobs:
           set -euo pipefail
 
           repo_name="${GITHUB_REPOSITORY#*/}"
+          gitlab_repo_name="$(printf '%s' "$repo_name" | tr '[:upper:]' '[:lower:]')"
           mirror_dir="$(mktemp -d)"
           askpass="$mirror_dir/git-askpass"
           trap 'rm -rf "$mirror_dir"' EXIT
@@ -50,13 +51,13 @@ jobs:
           cat > "$askpass" <<'ASKPASS'
           #!/bin/sh
           case "$1" in
-            *Username*) printf '%s\n' "oauth2" ;;
-            *Password*) printf '%s\n' "$GITLAB_TOKEN" ;;
+            *Username*) printf '%s\\n' "oauth2" ;;
+            *Password*) printf '%s\\n' "$GITLAB_TOKEN" ;;
             *) exit 1 ;;
           esac
           ASKPASS
           chmod 700 "$askpass"
 
           git clone --mirror "https://github.com/$GITHUB_REPOSITORY.git" "$mirror_dir/repository.git"
-          git -C "$mirror_dir/repository.git" remote add gitlab "https://gitlab.com/Mr444-dev/$repo_name.git"
+          git -C "$mirror_dir/repository.git" remote add gitlab "https://gitlab.com/Mr444-dev/$gitlab_repo_name.git"
           GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git -C "$mirror_dir/repository.git" push --mirror gitlab
