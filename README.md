@@ -6,13 +6,13 @@
 
 <p align="center"><strong>.NET 10 distributed-order processing with PostgreSQL, Kafka, and a transactional outbox.</strong></p>
 
-<p align="center"><img src="https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&amp;logoColor=white" alt=".NET 10"> <img src="https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&amp;logoColor=white" alt="PostgreSQL"> <img src="https://img.shields.io/badge/Kafka-231F20?logo=apachekafka&amp;logoColor=white" alt="Kafka"> <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT"></p>
+<p align="center"><img src="https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&amp;logoColor=white" alt=".NET 10"> <img src="https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&amp;logoColor=white" alt="PostgreSQL"> <img src="https://img.shields.io/badge/Kafka-231F20?logo=apachekafka&amp;logoColor=white" alt="Kafka"> <img src="https://img.shields.io/badge/Source-All%20rights%20reserved-red.svg" alt="All rights reserved"></p>
 
 <p align="center"><a href="https://github.com/Mr444-dev/blackbox/actions/workflows/ci.yml"><img src="https://github.com/Mr444-dev/blackbox/actions/workflows/ci.yml/badge.svg?branch=main" alt="GitHub Actions CI status"></a> <a href="https://gitlab.com/Mr444-dev/blackbox/-/pipelines"><img src="https://gitlab.com/Mr444-dev/blackbox/badges/main/pipeline.svg" alt="GitLab pipeline status"></a></p>
 
 **Stack:** C# · .NET 10 · ASP.NET Core · PostgreSQL · Kafka · Docker Compose · xUnit · Playwright
 
-<p align="center"><a href="#run-locally">Run locally</a> &nbsp;·&nbsp; <a href="#recorded-demo">Recorded demo</a> &nbsp;·&nbsp; <a href="#license">License</a></p>
+<p align="center"><a href="#run-locally">Run locally</a> &nbsp;·&nbsp; <a href="#recorded-demo">Recorded demo</a> &nbsp;·&nbsp; <a href="#copyright-and-reuse">Copyright and reuse</a></p>
 
 ## Overview
 
@@ -323,6 +323,6 @@ The repository contains performance lab plans, but no benchmark result is claime
 
 See [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md). Next reliability milestones are failure injection around the Kafka offset commit, Outbox retry backoff, and an operator-safe Kafka DLQ replay path.
 
-## License
+## Copyright and reuse
 
-MIT. See [LICENSE](LICENSE). Third-party dependencies and assets remain under their respective licenses.
+Original project code and documentation by Michał Rusinek (Mr444-dev) are not offered under an open-source license; all rights are reserved. See [LICENSE](LICENSE). Third-party dependencies and assets remain under their respective licenses.
